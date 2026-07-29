@@ -1,0 +1,21 @@
+[package]
+name = "backend"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8.9", features = ["multipart", "ws"] }
+axum-extra = { version = "0.12.6", features = ["cookie"] }
+calamine = "0.36.1"
+csv = "1.4.0"
+dotenvy = "0.15.7"
+http = "1.5.0"
+ldap3 = "0.12.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", features = ["full"] }
+tower-http = { version = "0.7.0", features = ["limit"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+translit = "0.8.0"
