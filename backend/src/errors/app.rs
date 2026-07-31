@@ -1,5 +1,11 @@
-use axum::response::{IntoResponse, Response};
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use thiserror::Error;
+
+use super::LdapAuthError;
 
 /// Ошибки, которые прикладные сервисы могут передать в HTTP-слой.
 #[derive(Debug, Error)]
@@ -30,6 +36,47 @@ pub(crate) enum AppError {
 impl IntoResponse for AppError {
     /// Преобразует внутренние ошибки в стабильный публичный формат HTTP-ответа.
     fn into_response(self) -> Response {
-        todo!("map application errors to the public API error envelope")
+        let (status, message) = match self {
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "authentication required".to_owned(),
+            ),
+            Self::Forbidden => (StatusCode::FORBIDDEN, "access denied".to_owned()),
+            Self::ImportBusy => (
+                StatusCode::CONFLICT,
+                "another import is already running".to_owned(),
+            ),
+            Self::InvalidUpload(message) => (StatusCode::BAD_REQUEST, message),
+            Self::Validation(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),
+            Self::LdapUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "LDAP is unavailable".to_owned(),
+            ),
+            Self::Internal => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal server error".to_owned(),
+            ),
+        };
+        tracing::warn!(
+            http_status = status.as_u16(),
+            error_message = %message,
+            "returning application error response"
+        );
+
+        (status, Json(message)).into_response()
+    }
+}
+
+impl From<LdapAuthError> for AppError {
+    fn from(error: LdapAuthError) -> Self {
+        tracing::warn!(%error, "mapping LDAP authentication error to application error");
+        match error {
+            LdapAuthError::InvalidCredentials => Self::Unauthorized,
+            LdapAuthError::Forbidden => Self::Forbidden,
+            LdapAuthError::Unavailable => Self::LdapUnavailable,
+            LdapAuthError::MissingSamAccountName | LdapAuthError::UnexpectedSearchResult => {
+                Self::Internal
+            }
+        }
     }
 }
