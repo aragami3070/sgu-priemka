@@ -14,7 +14,7 @@ use crate::{
 pub(crate) struct AppState {
     /// Проверенная конфигурация процесса.
     pub(crate) config: Arc<Config>,
-    /// Общий LDAP-сервис для входа операторов и служебных операций со студентами.
+    /// Общий LDAP-сервис для входа операторов и операций от имени текущей сессии.
     pub(crate) ldap: Arc<LdapService>,
     /// Сервис локальных непрозрачных сессий.
     pub(crate) sessions: Arc<SessionService>,
@@ -33,7 +33,7 @@ impl AppState {
 
         // NOTE: Инициализация сервисов
         let ldap = Arc::new(LdapService::new(config.clone()));
-        let sessions = Arc::new(SessionService::new());
+        let sessions = Arc::new(SessionService::new(config.session_ttl));
         let jobs = Arc::new(JobService::new());
         let results = Arc::new(ResultService::new(config.clone())?);
         let imports = Arc::new(ImportService::new(
@@ -43,13 +43,15 @@ impl AppState {
             config.clone(),
         ));
 
-        Ok(Self {
+        let state = Self {
             config,
             ldap,
             sessions,
             jobs,
             imports,
             results,
-        })
+        };
+        tracing::info!("application state initialization completed");
+        Ok(state)
     }
 }

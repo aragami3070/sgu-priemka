@@ -1,24 +1,33 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use crate::{
-    entities::auth::{LdapIdentity, Session, SessionId},
+    entities::auth::{LdapCredentials, LdapIdentity, Session, SessionId},
     errors::AppError,
 };
 
 /// Хранилище локальных сессий в памяти.
 ///
-/// Хранилище связывает cookie только с локальными данными и не содержит LDAP credentials.
-#[derive(Default)]
+/// Cookie содержит только `SessionId`; LDAP credentials остаются в памяти backend.
 pub(crate) struct SessionService {
-    // TODO: надо перепроверить, пока как заглушка
-    store: HashMap<SessionId, Session>,
+    /// Сессии индексируются только по непрозрачному значению из cookie.
+    store: RwLock<HashMap<SessionId, Session>>,
+    /// Единый срок действия новых сессий из конфигурации приложения.
+    ttl: Duration,
 }
 
 impl SessionService {
     /// Создаёт пустое хранилище сессий в памяти.
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(ttl: Duration) -> Self {
         Self {
-            store: HashMap::new(),
+            store: RwLock::new(HashMap::new()),
+            ttl,
         }
     }
 
