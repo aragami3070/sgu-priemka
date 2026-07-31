@@ -1,18 +1,22 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
 
 use crate::{
-    config::ResultConfig,
+    config::Config,
     entities::{import::PreparedStudent, result::StoredResult},
     errors::AppError,
 };
 
 /// Файловый сервис для сформированных CSV с учётными данными.
-pub(crate) struct ResultService;
+pub(crate) struct ResultService {
+    config: Arc<Config>,
+}
 
 impl ResultService {
     /// Создаёт при необходимости выходной каталог и подготавливает хранилище.
-    pub(crate) fn new(_config: &ResultConfig) -> Result<Self, AppError> {
-        todo!("initialize and validate the result directory")
+    pub(crate) fn new(config: Arc<Config>) -> Result<Self, AppError> {
+        Ok(ResultService { config })
     }
 
     /// Атомарно записывает CSV `Fio,Login,Pass` под именем из текущей даты и времени.

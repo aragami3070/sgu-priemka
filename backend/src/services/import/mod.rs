@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::{
+    config::Config,
     entities::{import::ImportContext, job::JobStatus},
     errors::AppError,
     services::{jobs::JobService, ldap::LdapService, results::ResultService},
@@ -22,8 +23,8 @@ pub(crate) struct ImportService {
     jobs: Arc<JobService>,
     /// Сервис записи итоговых CSV.
     results: Arc<ResultService>,
-    /// Серверная соль для вычисления временных паролей.
-    salt: Arc<str>,
+    /// Для доступа к соли для вычисления временных паролей.
+    salt: Arc<Config>,
     /// Блокировка, исключающая параллельную запись нескольких импортов в LDAP.
     lock: Arc<Semaphore>,
 }
@@ -31,12 +32,18 @@ pub(crate) struct ImportService {
 impl ImportService {
     /// Собирает pipeline из разделяемых прикладных сервисов.
     pub(crate) fn new(
-        _ldap: Arc<LdapService>,
-        _jobs: Arc<JobService>,
-        _results: Arc<ResultService>,
-        _salt: Arc<str>,
+        ldap: Arc<LdapService>,
+        jobs: Arc<JobService>,
+        results: Arc<ResultService>,
+        salt: Arc<Config>,
     ) -> Self {
-        todo!("construct the import service and its single-run semaphore")
+        Self {
+            ldap,
+            jobs,
+            results,
+            salt,
+            lock: Arc::new(Semaphore::new(1)),
+        }
     }
 
     /// Выполняет разбор, валидацию, поиск конфликтов, генерацию паролей, LDAP и вывод CSV.

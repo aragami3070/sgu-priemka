@@ -28,7 +28,28 @@ pub(crate) struct AppState {
 
 impl AppState {
     /// Создаёт разделяемые сервисы из проверенной конфигурации.
-    pub(crate) fn new(_config: Config) -> Result<Self, AppError> {
-        todo!("construct shared application services")
+    pub(crate) fn new(config: Config) -> Result<Self, AppError> {
+        let config = Arc::new(config);
+
+        // NOTE: Инициализация сервисов
+        let ldap = Arc::new(LdapService::new(config.clone()));
+        let sessions = Arc::new(SessionService::new());
+        let jobs = Arc::new(JobService::new());
+        let results = Arc::new(ResultService::new(config.clone())?);
+        let imports = Arc::new(ImportService::new(
+            ldap.clone(),
+            jobs.clone(),
+            results.clone(),
+            config.clone(),
+        ));
+
+        Ok(Self {
+            config,
+            ldap,
+            sessions,
+            jobs,
+            imports,
+            results,
+        })
     }
 }

@@ -13,7 +13,7 @@ pub(crate) struct LdapIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct SessionId(
     /// Исходное значение закрыто, чтобы нельзя было создать непроверенный идентификатор сессии.
-    String,
+    Uuid,
 );
 
 /// Локальная серверная сессия, не содержащая LDAP credentials.

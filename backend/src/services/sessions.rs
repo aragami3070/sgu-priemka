@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     entities::auth::{LdapIdentity, Session, SessionId},
     errors::AppError,
@@ -7,12 +9,17 @@ use crate::{
 ///
 /// Хранилище связывает cookie только с локальными данными и не содержит LDAP credentials.
 #[derive(Default)]
-pub(crate) struct SessionService;
+pub(crate) struct SessionService {
+    // TODO: надо перепроверить, пока как заглушка
+    store: HashMap<SessionId, Session>,
+}
 
 impl SessionService {
     /// Создаёт пустое хранилище сессий в памяти.
     pub(crate) fn new() -> Self {
-        todo!("initialize the in-memory session store")
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     /// Создаёт локальную сессию и отдельный UUID хранилища результатов.

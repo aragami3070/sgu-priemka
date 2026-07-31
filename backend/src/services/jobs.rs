@@ -1,15 +1,22 @@
+use std::collections::HashMap;
+
 use tokio::sync::watch;
 
 use crate::{entities::job::JobStatus, errors::AppError};
 
 /// Реестр задач импорта и их watch-каналов в памяти.
 #[derive(Default)]
-pub(crate) struct JobService;
+pub(crate) struct JobService {
+    // TODO: скорее всего там не JobStatus, надо перепроверить, пока как заглушка
+    store: HashMap<String, JobStatus>,
+}
 
 impl JobService {
     /// Создаёт пустой реестр задач.
     pub(crate) fn new() -> Self {
-        todo!("initialize the in-memory job store")
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     /// Регистрирует владельца задачи, сохраняет начальный статус и возвращает идентификатор.
