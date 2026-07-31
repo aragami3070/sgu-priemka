@@ -7,9 +7,8 @@ use std::sync::Arc;
 
 use crate::config::Config;
 
-/// Единый сервис доступа к LDAP с разделёнными пользовательскими и служебными bind.
+/// Единый сервис доступа к LDAP; операции выполняются с credentials текущей сессии.
 pub(crate) struct LdapService {
-    /// Проверенная конфигурация LDAP и служебной учётной записи.
     config: Arc<Config>,
 }
 

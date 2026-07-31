@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 use uuid::Uuid;
+
+use crate::entities::auth::LdapCredentials;
 
 /// Нормализованное представление строки исходного CSV до валидации.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +52,7 @@ impl SecretString {
 }
 
 /// Метаданные запроса, необходимые на протяжении одного импорта.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct ImportContext {
     /// Идентификатор для подписки на прогресс через WebSocket.
     pub(crate) job_id: String,
@@ -56,6 +60,8 @@ pub(crate) struct ImportContext {
     pub(crate) username: String,
     /// UUID каталога со сформированными файлами.
     pub(crate) storage_id: Uuid,
+    /// Credentials сессии, от имени которой выполняются все LDAP-операции импорта.
+    pub(crate) ldap_credentials: Arc<LdapCredentials>,
     /// Имя загруженного файла для диагностики и аудита.
     pub(crate) original_filename: String,
 }

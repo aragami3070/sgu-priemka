@@ -1,15 +1,26 @@
+use std::sync::Arc;
+
 use axum::{extract::FromRequestParts, http::request::Parts};
 use uuid::Uuid;
 
-use crate::{errors::AppError, state::AppState};
+use crate::{
+    api::cookies,
+    entities::auth::{LdapCredentials, SessionId},
+    errors::AppError,
+    state::AppState,
+};
 
 /// Данные аутентифицированного пользователя для защищённых обработчиков.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(super) struct AuthenticatedUser {
+    /// Идентификатор локальной сессии, прочитанный из cookie и проверенный в хранилище.
+    pub(super) session_id: SessionId,
     /// Каноническое имя пользователя из `sAMAccountName`.
     pub(super) username: String,
     /// Непрозрачный идентификатор группы файлов этой сессии.
     pub(super) storage_id: Uuid,
+    /// Credentials текущей сессии для LDAP-операций от имени вошедшего пользователя.
+    pub(super) ldap_credentials: Arc<LdapCredentials>,
 }
 
 impl FromRequestParts<AppState> for AuthenticatedUser {
@@ -17,9 +28,23 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
 
     /// Находит по cookie действующую серверную сессию до запуска обработчика.
     async fn from_request_parts(
-        _parts: &mut Parts,
-        _state: &AppState,
+        parts: &mut Parts,
+        state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        todo!("read the session cookie and validate the local session")
+        let session_id = cookies::session_id_from_headers(&parts.headers)?;
+        let session = state.sessions.get(&session_id).await?;
+        tracing::info!(
+            username = %session.username,
+            storage_id = %session.storage_id,
+            ldap_identifier = session.ldap_credentials.identifier(),
+            "authenticated user extraction completed"
+        );
+
+        Ok(Self {
+            session_id,
+            username: session.username,
+            storage_id: session.storage_id,
+            ldap_credentials: session.ldap_credentials,
+        })
     }
 }

@@ -3,7 +3,7 @@ use thiserror::Error;
 /// Ошибки пользовательской аутентификации и авторизации через LDAP.
 #[derive(Debug, Error)]
 pub(crate) enum LdapAuthError {
-    /// LDAP отклонил сформированный Bind DN или введённый пароль.
+    /// LDAP отклонил сформированное bind-имя или введённый пароль.
     #[error("invalid LDAP credentials")]
     InvalidCredentials,
     /// Учётная запись не состоит в группе `csit_admins`.
