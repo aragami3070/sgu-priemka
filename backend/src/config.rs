@@ -55,20 +55,14 @@ impl Config {
 }
 
 /// Настройки подключения к LDAP и целевого контейнера.
-///
-/// Тип намеренно не реализует `Debug`, потому что содержит пароль служебной учётной записи.
 #[derive(Clone)]
 pub(crate) struct LdapConfig {
     /// URL LDAP-сервера.
     pub(crate) url: String,
-    /// DN-суффикс, который backend добавляет после `CN=<identifier>` при входе.
-    pub(crate) user_bind_dn_suffix: String,
+    /// NetBIOS-имя домена для пользовательского bind в формате `DOMAIN\\identifier`.
+    pub(crate) user_bind_domain: String,
     /// База поиска учётной записи после успешного пользовательского bind.
     pub(crate) auth_search_base_dn: String,
-    /// Distinguished Name служебной учётной записи для операций со студентами.
-    pub(crate) service_bind_dn: String,
-    /// Пароль служебной учётной записи LDAP.
-    pub(crate) service_bind_password: String,
     /// Distinguished Name контейнера, в котором создаются учётные записи студентов.
     pub(crate) users_container_dn: String,
     /// Distinguished Name группы пользователей, которым разрешён вход.
@@ -84,10 +78,8 @@ impl LdapConfig {
 
         Ok(Self {
             url,
-            user_bind_dn_suffix: required("LDAP_USER_BIND_DN_SUFFIX")?,
+            user_bind_domain: required("LDAP_USER_BIND_DOMAIN")?,
             auth_search_base_dn: required("LDAP_AUTH_SEARCH_BASE_DN")?,
-            service_bind_dn: required("LDAP_SERVICE_BIND_DN")?,
-            service_bind_password: required_secret("LDAP_SERVICE_BIND_PASSWORD")?,
             users_container_dn: required("LDAP_USERS_CONTAINER_DN")?,
             csit_admins_group_dn: required("LDAP_CSIT_ADMINS_GROUP_DN")?,
         })
@@ -218,10 +210,8 @@ mod tests {
         "COOKIE_SECURE",
         "SESSION_TTL_SECONDS",
         "LDAP_URL",
-        "LDAP_USER_BIND_DN_SUFFIX",
+        "LDAP_USER_BIND_DOMAIN",
         "LDAP_AUTH_SEARCH_BASE_DN",
-        "LDAP_SERVICE_BIND_DN",
-        "LDAP_SERVICE_BIND_PASSWORD",
         "LDAP_USERS_CONTAINER_DN",
         "LDAP_CSIT_ADMINS_GROUP_DN",
         "RESULT_OUTPUT_DIR",
@@ -231,10 +221,8 @@ mod tests {
 
     const REQUIRED_VARIABLES: &[(&str, &str)] = &[
         ("LDAP_URL", "ldap://ldap.test"),
-        ("LDAP_USER_BIND_DN_SUFFIX", "OU=Users,DC=main,DC=sgu,DC=ru"),
+        ("LDAP_USER_BIND_DOMAIN", "MAIN"),
         ("LDAP_AUTH_SEARCH_BASE_DN", "DC=main,DC=sgu,DC=ru"),
-        ("LDAP_SERVICE_BIND_DN", "CN=service,DC=main,DC=sgu,DC=ru"),
-        ("LDAP_SERVICE_BIND_PASSWORD", "ldap-password"),
         (
             "LDAP_USERS_CONTAINER_DN",
             "OU=groups,OU=КНиИТ,OU=Факультеты,DC=main,DC=sgu,DC=ru",
@@ -306,7 +294,6 @@ mod tests {
             ("LISTEN_ADDR", "0.0.0.0:9000"),
             ("COOKIE_SECURE", "false"),
             ("SESSION_TTL_SECONDS", "1800"),
-            ("LDAP_SERVICE_BIND_PASSWORD", " ldap secret "),
             ("RESULT_OUTPUT_DIR", "/tmp/sgu-priemka-results"),
             ("RESULT_TTL_SECONDS", "7200"),
             ("PASSWORD_SALT", " password salt "),
@@ -321,16 +308,8 @@ mod tests {
         assert!(!config.cookie_secure);
         assert_eq!(config.session_ttl, Duration::from_secs(1800));
         assert_eq!(config.ldap.url, "ldap://ldap.test");
-        assert_eq!(
-            config.ldap.user_bind_dn_suffix,
-            "OU=Users,DC=main,DC=sgu,DC=ru"
-        );
+        assert_eq!(config.ldap.user_bind_domain, "MAIN");
         assert_eq!(config.ldap.auth_search_base_dn, "DC=main,DC=sgu,DC=ru");
-        assert_eq!(
-            config.ldap.service_bind_dn,
-            "CN=service,DC=main,DC=sgu,DC=ru"
-        );
-        assert_eq!(config.ldap.service_bind_password, " ldap secret ");
         assert_eq!(
             config.ldap.users_container_dn,
             "OU=groups,OU=КНиИТ,OU=Факультеты,DC=main,DC=sgu,DC=ru"
@@ -367,13 +346,13 @@ mod tests {
     #[test]
     fn reports_missing_required_variable() {
         let _lock = lock_environment();
-        let _environment = TestEnvironment::new(&[("LDAP_SERVICE_BIND_PASSWORD", "  ")]);
+        let _environment = TestEnvironment::new(&[("LDAP_USERS_CONTAINER_DN", "  ")]);
 
         let error = config_error(Config::from_env());
 
         assert!(matches!(
             error,
-            ConfigError::Missing("LDAP_SERVICE_BIND_PASSWORD")
+            ConfigError::Missing("LDAP_USERS_CONTAINER_DN")
         ));
     }
 
