@@ -202,3 +202,216 @@ fn validate_url(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::{
+        ffi::OsString,
+        sync::{Mutex, MutexGuard},
+    };
+
+    use super::*;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const CONFIG_VARIABLES: &[&str] = &[
+        "LISTEN_ADDR",
+        "COOKIE_SECURE",
+        "SESSION_TTL_SECONDS",
+        "LDAP_URL",
+        "LDAP_USER_BIND_DN_SUFFIX",
+        "LDAP_AUTH_SEARCH_BASE_DN",
+        "LDAP_SERVICE_BIND_DN",
+        "LDAP_SERVICE_BIND_PASSWORD",
+        "LDAP_USERS_CONTAINER_DN",
+        "LDAP_CSIT_ADMINS_GROUP_DN",
+        "RESULT_OUTPUT_DIR",
+        "RESULT_TTL_SECONDS",
+        "PASSWORD_SALT",
+    ];
+
+    const REQUIRED_VARIABLES: &[(&str, &str)] = &[
+        ("LDAP_URL", "ldap://ldap.test"),
+        ("LDAP_USER_BIND_DN_SUFFIX", "OU=Users,DC=main,DC=sgu,DC=ru"),
+        ("LDAP_AUTH_SEARCH_BASE_DN", "DC=main,DC=sgu,DC=ru"),
+        ("LDAP_SERVICE_BIND_DN", "CN=service,DC=main,DC=sgu,DC=ru"),
+        ("LDAP_SERVICE_BIND_PASSWORD", "ldap-password"),
+        (
+            "LDAP_USERS_CONTAINER_DN",
+            "OU=groups,OU=КНиИТ,OU=Факультеты,DC=main,DC=sgu,DC=ru",
+        ),
+        (
+            "LDAP_CSIT_ADMINS_GROUP_DN",
+            "CN=csit_admins,OU=groups,DC=main,DC=sgu,DC=ru",
+        ),
+        ("PASSWORD_SALT", "password-salt"),
+    ];
+
+    struct TestEnvironment {
+        previous: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl TestEnvironment {
+        fn new(overrides: &[(&str, &str)]) -> Self {
+            let previous = CONFIG_VARIABLES
+                .iter()
+                .map(|name| (*name, env::var_os(name)))
+                .collect();
+
+            for name in CONFIG_VARIABLES {
+                // SAFETY: тест удерживает ENV_LOCK всё время жизни TestEnvironment, поэтому
+                // тесты этого модуля не изменяют окружение параллельно.
+                unsafe { env::remove_var(name) };
+            }
+            for (name, value) in REQUIRED_VARIABLES.iter().chain(overrides) {
+                // SAFETY: изменение окружения сериализовано тем же ENV_LOCK.
+                unsafe { env::set_var(name, value) };
+            }
+
+            Self { previous }
+        }
+    }
+
+    impl Drop for TestEnvironment {
+        fn drop(&mut self) {
+            for name in CONFIG_VARIABLES {
+                // SAFETY: ENV_LOCK всё ещё удерживается и будет освобождён после TestEnvironment.
+                unsafe { env::remove_var(name) };
+            }
+            for (name, value) in &self.previous {
+                if let Some(value) = value {
+                    // SAFETY: восстановление окружения выполняется под тем же ENV_LOCK.
+                    unsafe { env::set_var(name, value) };
+                }
+            }
+        }
+    }
+
+    fn lock_environment() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn config_error(result: Result<Config, ConfigError>) -> ConfigError {
+        match result {
+            Ok(_) => panic!("ожидалась ошибка конфигурации"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn loads_all_config_sections() {
+        let _lock = lock_environment();
+        let _environment = TestEnvironment::new(&[
+            ("LISTEN_ADDR", "0.0.0.0:9000"),
+            ("COOKIE_SECURE", "false"),
+            ("SESSION_TTL_SECONDS", "1800"),
+            ("LDAP_SERVICE_BIND_PASSWORD", " ldap secret "),
+            ("RESULT_OUTPUT_DIR", "/tmp/sgu-priemka-results"),
+            ("RESULT_TTL_SECONDS", "7200"),
+            ("PASSWORD_SALT", " password salt "),
+        ]);
+
+        let config = match Config::from_env() {
+            Ok(config) => config,
+            Err(error) => panic!("конфигурация должна быть корректной: {error}"),
+        };
+
+        assert_eq!(config.listen_addr, SocketAddr::from(([0, 0, 0, 0], 9000)));
+        assert!(!config.cookie_secure);
+        assert_eq!(config.session_ttl, Duration::from_secs(1800));
+        assert_eq!(config.ldap.url, "ldap://ldap.test");
+        assert_eq!(
+            config.ldap.user_bind_dn_suffix,
+            "OU=Users,DC=main,DC=sgu,DC=ru"
+        );
+        assert_eq!(config.ldap.auth_search_base_dn, "DC=main,DC=sgu,DC=ru");
+        assert_eq!(
+            config.ldap.service_bind_dn,
+            "CN=service,DC=main,DC=sgu,DC=ru"
+        );
+        assert_eq!(config.ldap.service_bind_password, " ldap secret ");
+        assert_eq!(
+            config.ldap.users_container_dn,
+            "OU=groups,OU=КНиИТ,OU=Факультеты,DC=main,DC=sgu,DC=ru"
+        );
+        assert_eq!(
+            config.ldap.csit_admins_group_dn,
+            "CN=csit_admins,OU=groups,DC=main,DC=sgu,DC=ru"
+        );
+        assert_eq!(
+            config.results.output_dir,
+            PathBuf::from("/tmp/sgu-priemka-results")
+        );
+        assert_eq!(config.results.ttl, Duration::from_secs(7200));
+        assert_eq!(config.salt, " password salt ");
+    }
+
+    #[test]
+    fn uses_defaults_for_optional_values() {
+        let _lock = lock_environment();
+        let _environment = TestEnvironment::new(&[]);
+
+        let config = match Config::from_env() {
+            Ok(config) => config,
+            Err(error) => panic!("конфигурация должна быть корректной: {error}"),
+        };
+
+        assert_eq!(config.listen_addr, SocketAddr::from(([127, 0, 0, 1], 8080)));
+        assert!(config.cookie_secure);
+        assert_eq!(config.session_ttl, Duration::from_secs(3600));
+        assert_eq!(config.results.output_dir, PathBuf::from("output"));
+        assert_eq!(config.results.ttl, Duration::from_secs(86400));
+    }
+
+    #[test]
+    fn reports_missing_required_variable() {
+        let _lock = lock_environment();
+        let _environment = TestEnvironment::new(&[("LDAP_SERVICE_BIND_PASSWORD", "  ")]);
+
+        let error = config_error(Config::from_env());
+
+        assert!(matches!(
+            error,
+            ConfigError::Missing("LDAP_SERVICE_BIND_PASSWORD")
+        ));
+    }
+
+    #[test]
+    fn rejects_non_ldap_url() {
+        let _lock = lock_environment();
+        let _environment = TestEnvironment::new(&[("LDAP_URL", "ldaps://ldap.test")]);
+
+        let error = config_error(Config::from_env());
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue {
+                name: "LDAP_URL",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_scalar_values() {
+        let _lock = lock_environment();
+
+        for (name, value) in [
+            ("LISTEN_ADDR", "localhost"),
+            ("COOKIE_SECURE", "yes"),
+            ("SESSION_TTL_SECONDS", "invalid"),
+            ("RESULT_TTL_SECONDS", "0"),
+        ] {
+            let _environment = TestEnvironment::new(&[(name, value)]);
+            let error = config_error(Config::from_env());
+            assert!(matches!(
+                error,
+                ConfigError::InvalidValue {
+                    name: error_name,
+                    ..
+                } if error_name == name
+            ));
+        }
+    }
+}
