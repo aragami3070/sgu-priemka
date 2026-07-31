@@ -42,10 +42,10 @@ export function AppShell({
             <Brand compact />
             <Box className="app-header__account">
               <Avatar className="app-header__avatar">
-                {user.identifier.slice(0, 1).toUpperCase()}
+                {user.username.slice(0, 1).toUpperCase()}
               </Avatar>
               <Typography className="app-header__user" variant="body2">
-                {user.identifier}
+                {user.username}
               </Typography>
               <Tooltip title="Выйти">
                 <IconButton aria-label="Выйти" onClick={onLogout}>

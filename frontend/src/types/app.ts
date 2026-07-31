@@ -1,5 +1,7 @@
 export type AppView = 'import' | 'results'
 
 export interface AuthUser {
-  identifier: string
+  username: string
+  expiresAt?: string
+  isSkipped?: boolean
 }
