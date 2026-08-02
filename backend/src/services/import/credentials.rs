@@ -13,6 +13,7 @@ pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportErr
             message: err_message,
         })
     };
+
     if student.last_name.trim().is_empty() {
         return Err(ImportError::Validation {
             row: student.source_row,
@@ -115,5 +116,96 @@ mod tests {
         let second_login = generate_login(&second).expect("корректное ФИО должно дать логин");
 
         assert_eq!(first_login, second_login);
+    }
+
+    #[test]
+    fn returns_validation_error_when_first_name_is_empty() {
+        let mut student = student("", "Иванов", "Иванович");
+        student.source_row = 17;
+
+        let error = generate_login(&student).expect_err("пустое имя должно вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 17, message } if message == "Имя пустое"
+        ));
+    }
+
+    #[test]
+    fn returns_validation_error_when_patronymic_is_empty() {
+        let mut student = student("Иван", "Иванов", "");
+        student.source_row = 23;
+
+        let error = generate_login(&student).expect_err("пустое отчество должно вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 23, message } if message == "Отчество пустое"
+        ));
+    }
+
+    #[test]
+    fn returns_validation_error_when_last_name_is_empty() {
+        let mut student = student("Иван", "", "Иванович");
+        student.source_row = 31;
+
+        let error = generate_login(&student).expect_err("пустая фамилия должна вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 31, message } if message == "Фамилия пустая"
+        ));
+    }
+
+    #[test]
+    fn returns_validation_error_when_first_name_contains_only_whitespace() {
+        let mut student = student(" \t\n ", "Иванов", "Иванович");
+        student.source_row = 37;
+
+        let error = generate_login(&student)
+            .expect_err("имя только из пробельных символов должно вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 37, message } if message == "Имя пустое"
+        ));
+    }
+
+    #[test]
+    fn returns_validation_error_when_last_name_contains_only_whitespace() {
+        let mut student = student("Иван", " \t\n ", "Иванович");
+        student.source_row = 41;
+
+        let error = generate_login(&student)
+            .expect_err("фамилия только из пробельных символов должна вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 41, message } if message == "Фамилия пустая"
+        ));
+    }
+
+    #[test]
+    fn returns_validation_error_when_patronymic_contains_only_whitespace() {
+        let mut student = student("Иван", "Иванов", " \t\n ");
+        student.source_row = 43;
+
+        let error = generate_login(&student)
+            .expect_err("отчество только из пробельных символов должно вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 43, message } if message == "Отчество пустое"
+        ));
+    }
+
+    #[test]
+    fn trims_surrounding_whitespace_before_generating_login() {
+        let student = student(" \tИван\n", "  Иванов  ", "\nИванович\t");
+
+        let login =
+            generate_login(&student).expect("ФИО с пробелами по краям должно быть допустимо");
+
+        assert_eq!(login, "ivanovii");
     }
 }
