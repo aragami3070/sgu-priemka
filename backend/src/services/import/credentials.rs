@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use translit::{Gost779B, ToLatin};
 
 use crate::{
@@ -31,9 +32,17 @@ pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportErr
         .to_lowercase())
 }
 
-/// Вычисляет временный пароль из полного ФИО, UUID строки и серверной соли.
-pub(super) fn generate_password(_full_name: &str, _uuid: &str, _salt: &str) -> SecretString {
-    todo!("derive the policy-safe SHA-256 password")
+/// Вычисляет временный пароль из логина, серверной соли и UUID строки.
+pub(super) fn generate_password(login: &str, uuid: &str, salt: &str) -> SecretString {
+    let mut hasher = Sha256::new();
+
+    hasher.update(login.as_bytes());
+    hasher.update([0]);
+    hasher.update(salt.as_bytes());
+    hasher.update([0]);
+    hasher.update(uuid.as_bytes());
+
+    SecretString::new(hex::encode(hasher.finalize()))
 }
 
 #[cfg(test)]
