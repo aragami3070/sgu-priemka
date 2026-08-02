@@ -6,6 +6,10 @@ use crate::{
     errors::ImportError,
 };
 
+const FORBIDDEN_SAM_ACCOUNT_NAME_CHARACTERS: [char; 15] = [
+    '"', '/', '\\', '[', ']', ':', '|', '<', '>', '+', '=', ';', '?', ',', '*',
+];
+
 /// Формирует логин в нижнем регистре, транслитерируя фамилию и инициалы студента.
 pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportError> {
     let get_first_char = |s: &str, err_message: String| {
@@ -22,14 +26,41 @@ pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportErr
         });
     }
 
-    Ok(Gost779B::new(translit::Language::Ru)
+    let login = Gost779B::new(translit::Language::Ru)
         .to_latin(&format!(
             "{}{}{}",
             student.last_name.trim(),
             get_first_char(student.first_name.trim(), "Имя пустое".to_string())?,
             get_first_char(student.patronymic.trim(), "Отчество пустое".to_string())?
         ))
-        .to_lowercase())
+        .to_lowercase();
+
+    validate_login(student.source_row, &login)?;
+
+    Ok(login)
+}
+
+/// Проверяет ограничения Active Directory для пользовательского `sAMAccountName`.
+fn validate_login(source_row: usize, login: &str) -> Result<(), ImportError> {
+    let forbidden_character = login.chars().find(|character| {
+        character.is_control() || FORBIDDEN_SAM_ACCOUNT_NAME_CHARACTERS.contains(character)
+    });
+
+    if let Some(character) = forbidden_character {
+        return Err(ImportError::Validation {
+            row: source_row,
+            message: format!("Логин содержит запрещённый для sAMAccountName символ `{character}`"),
+        });
+    }
+
+    if login.ends_with('.') {
+        return Err(ImportError::Validation {
+            row: source_row,
+            message: "Логин не может заканчиваться точкой".to_owned(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Вычисляет временный пароль из логина, серверной соли и UUID строки.
@@ -216,6 +247,36 @@ mod tests {
             generate_login(&student).expect("ФИО с пробелами по краям должно быть допустимо");
 
         assert_eq!(login, "ivanovii");
+    }
+
+    #[test]
+    fn returns_validation_error_for_forbidden_sam_account_name_character() {
+        let mut student = student("Иван", "Иванов/Петров", "Иванович");
+        student.source_row = 47;
+
+        let error = generate_login(&student)
+            .expect_err("запрещённый символ в логине должен вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 47, message }
+                if message.contains("sAMAccountName") && message.contains('/')
+        ));
+    }
+
+    #[test]
+    fn returns_validation_error_when_login_ends_with_period() {
+        let mut student = student("Иван", "Иванов", ".");
+        student.source_row = 53;
+
+        let error =
+            generate_login(&student).expect_err("точка в конце логина должна вернуть ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 53, message }
+                if message == "Логин не может заканчиваться точкой"
+        ));
     }
 
     fn password(login: &str, uuid: &str, salt: &str) -> String {
