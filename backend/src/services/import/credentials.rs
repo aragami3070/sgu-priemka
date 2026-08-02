@@ -89,6 +89,15 @@ mod tests {
     }
 
     #[test]
+    fn transliterates_aslan_djan_gadzhiev_mamedov_rashidovich() {
+        let student = student("Аслан-Джан", "Гаджиев-Мамедов", "Рашидович");
+
+        let login = generate_login(&student).expect("корректное ФИО должно дать логин");
+
+        assert_eq!(login, "gadzhiev-mamedovar");
+    }
+
+    #[test]
     fn personal_email_and_group_do_not_affect_login() {
         let first = student("Иван", "Иванов", "Иванович");
         let mut second = first.clone();
