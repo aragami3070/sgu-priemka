@@ -114,6 +114,7 @@ dependencies = [
  "axum-extra",
  "csv",
  "dotenvy",
+ "encoding_rs",
  "hex",
  "http",
  "ldap3",
