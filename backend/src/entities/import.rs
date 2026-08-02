@@ -39,17 +39,17 @@ pub(crate) struct PreparedStudent {
     pub(crate) password: SecretString,
 }
 
-/// Обёртка пароля, исключающая случайный вывод открытого значения через `Debug`.
+/// Обёртка пароля
 #[derive(Clone)]
-pub(crate) struct SecretString {
-    /// Открытое значение закрыто для прямого логирования и сериализации.
-    _value: String,
-}
+pub(crate) struct SecretString(String);
 
 impl SecretString {
-    /// Возвращает открытое значение только там, где пароль нужно отправить или сериализовать.
-    pub(crate) fn expose(&self) -> &str {
-        todo!("expose the secret only at the LDAP and CSV boundaries")
+    pub(crate) fn new(password: String) -> Self {
+        Self(password)
+    }
+
+    pub(crate) fn get(&self) -> &str {
+        &self.0
     }
 }
 
