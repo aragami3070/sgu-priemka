@@ -13,12 +13,19 @@ pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportErr
             message: err_message,
         })
     };
+    if student.last_name.trim().is_empty() {
+        return Err(ImportError::Validation {
+            row: student.source_row,
+            message: "Фамилия пустая".to_string(),
+        });
+    }
+
     Ok(Gost779B::new(translit::Language::Ru)
         .to_latin(&format!(
             "{}{}{}",
-            student.last_name,
-            get_first_char(&student.first_name, "Имя пустое".to_string())?,
-            get_first_char(&student.patronymic, "Отчество пустое".to_string())?
+            student.last_name.trim(),
+            get_first_char(student.first_name.trim(), "Имя пустое".to_string())?,
+            get_first_char(student.patronymic.trim(), "Отчество пустое".to_string())?
         ))
         .to_lowercase())
 }
