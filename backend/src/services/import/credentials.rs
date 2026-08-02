@@ -217,4 +217,77 @@ mod tests {
 
         assert_eq!(login, "ivanovii");
     }
+
+    fn password(login: &str, uuid: &str, salt: &str) -> String {
+        generate_password(login, uuid, salt).get().to_owned()
+    }
+
+    #[test]
+    fn generates_known_sha256_password_as_lowercase_hex() {
+        let password = password(
+            "ivanovii",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "test-salt",
+        );
+
+        assert_eq!(
+            password,
+            "0f2af905f83a4c740b304c6a9991e462a6ec595377d37ac38ed56d89611bdfbe"
+        );
+        assert_eq!(password.len(), 64);
+        assert!(
+            password
+                .chars()
+                .all(|character| character.is_ascii_hexdigit())
+        );
+        assert_eq!(password, password.to_ascii_lowercase());
+    }
+
+    #[test]
+    fn generates_the_same_password_for_the_same_input() {
+        let first = password(
+            "ivanovii",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "test-salt",
+        );
+        let second = password(
+            "ivanovii",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "test-salt",
+        );
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn changing_uuid_changes_password() {
+        let first = password("ivanovii", "uuid-1", "test-salt");
+        let second = password("ivanovii", "uuid-2", "test-salt");
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn changing_salt_changes_password() {
+        let first = password("ivanovii", "uuid", "salt-1");
+        let second = password("ivanovii", "uuid", "salt-2");
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn changing_login_changes_password() {
+        let first = password("ivanovii", "uuid", "test-salt");
+        let second = password("petrovpp", "uuid", "test-salt");
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn separators_prevent_ambiguous_input_concatenation() {
+        let first = password("ab", "d", "c");
+        let second = password("a", "d", "bc");
+
+        assert_ne!(first, second);
+    }
 }
