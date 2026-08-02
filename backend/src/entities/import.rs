@@ -9,14 +9,16 @@ use crate::entities::auth::LdapCredentials;
 pub(crate) struct StudentInput {
     /// Номер строки с единицы для ошибок валидации и LDAP.
     pub(crate) source_row: usize,
-    /// Фамилия студента из столбца `Last`.
-    pub(crate) surname: String,
     /// Имя студента из столбца `First`.
-    pub(crate) given_name: String,
-    /// Полное ФИО без сокращений из столбца `Fio`.
-    pub(crate) full_name: String,
-    /// Отчество, извлечённое из полного ФИО для генерации логина.
+    pub(crate) first_name: String,
+    /// Фамилия студента из столбца `Last`.
+    pub(crate) last_name: String,
+    /// Отчество студента из столбца `Patronymic`.
     pub(crate) patronymic: String,
+    /// Личная контактная почта студента из столбца `Email`.
+    pub(crate) email: String,
+    /// Учебная группа из столбца `Group`, переносимая в итоговый CSV.
+    pub(crate) group: String,
 }
 
 /// Проверенные данные, готовые к поиску конфликтов в LDAP и генерации пароля.
