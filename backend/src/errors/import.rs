@@ -22,8 +22,8 @@ pub(crate) enum ImportError {
         /// Понятное пользователю описание ошибки валидации.
         message: String,
     },
-    /// Сгенерированные данные конфликтуют с существующей записью LDAP.
-    #[error("LDAP collision at row {row}: {attribute}")]
+    /// Сгенерированные данные конфликтуют с другой строкой или записью LDAP.
+    #[error("identity collision at row {row}: {attribute}")]
     Collision {
         /// Номер исходной строки с единицы, значение которой уже существует.
         row: usize,
