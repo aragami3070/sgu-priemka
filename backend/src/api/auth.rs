@@ -1,15 +1,26 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+};
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::{api::cookies, entities::auth::LdapCredentials, errors::AppError, state::AppState};
+use crate::{
+    api::{cookies, extractors::AuthenticatedUser},
+    entities::auth::LdapCredentials,
+    errors::AppError,
+    state::AppState,
+};
 
 /// Объявляет маршруты аутентификации без подключения состояния приложения.
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
+        .route("/auth/whoami", get(whoami))
 }
 
 /// Учётные данные для прямого пользовательского LDAP bind.
@@ -28,6 +39,21 @@ struct LoginResponse {
     username: String,
     /// Срок локальной сессии в формате для фронтенда.
     expires_at: String,
+}
+
+/// Минимальные данные действующей локальной сессии для восстановления frontend-состояния.
+#[derive(Debug, Serialize)]
+struct WhoAmIResponse {
+    /// Каноническое имя пользователя из `sAMAccountName`.
+    username: String,
+}
+
+/// Проверяет локальную cookie-сессию и возвращает имя вошедшего пользователя.
+async fn whoami(user: AuthenticatedUser) -> Json<WhoAmIResponse> {
+    tracing::info!(username = %user.username, "current local session returned to frontend");
+    Json(WhoAmIResponse {
+        username: user.username,
+    })
 }
 
 /// Выполняет LDAP bind, проверяет admin group dn и создаёт локальную сессию.
