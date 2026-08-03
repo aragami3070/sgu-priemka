@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load()?;
     let listen_addr = config.listen_addr;
     let state = AppState::new(config)?;
+    spawn_cleanup_task(state.clone());
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
 
@@ -30,4 +31,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+/// Периодически очищает истёкшие сессии, terminal Job и итоговые CSV.
+fn spawn_cleanup_task(state: AppState) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            state.sessions.cleanup_expired().await;
+            state.jobs.cleanup_expired().await;
+            if let Err(error) = state.results.cleanup_expired().await {
+                tracing::error!(%error, "periodic result cleanup failed");
+            }
+        }
+    });
 }

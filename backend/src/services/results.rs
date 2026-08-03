@@ -512,7 +512,8 @@ mod tests {
     async fn creates_reads_and_lists_result_under_ldap_identifier() {
         let directory = TestDirectory::new();
         let service = service(&directory, Duration::from_secs(60));
-        let credentials = LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
+        let credentials =
+            LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
 
         let stored = service
             .create(&credentials, &[prepared_student()])
@@ -577,7 +578,8 @@ mod tests {
     async fn removes_expired_results_and_empty_owner_directory() {
         let directory = TestDirectory::new();
         let service = service(&directory, Duration::from_millis(1));
-        let credentials = LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
+        let credentials =
+            LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
         let stored = service
             .create(&credentials, &[prepared_student()])
             .await

@@ -52,6 +52,16 @@ pub(crate) enum JobStatus {
     },
 }
 
+impl JobStatus {
+    /// Терминальные состояния сохраняются ограниченное время и больше не обновляются pipeline.
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Completed { .. } | Self::Failed { .. } | Self::PartialFailure { .. }
+        )
+    }
+}
+
 /// Именованный этап pipeline, передаваемый в событиях прогресса.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +80,8 @@ pub(crate) enum JobStage {
     GeneratingPasswords,
     /// Запись подготовленных учётных записей студентов в LDAP.
     CreatingAccounts,
+    /// Атомарное сохранение итогового CSV.
+    SavingResult,
 }
 
 /// Адрес сформированного файла результата для API и событий задачи.
