@@ -6,7 +6,6 @@ use axum::{
 };
 use serde::Serialize;
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 use crate::{api::extractors::AuthenticatedUser, errors::AppError, state::AppState};
 
@@ -14,14 +13,14 @@ use crate::{api::extractors::AuthenticatedUser, errors::AppError, state::AppStat
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
         .route("/results", get(list_results))
-        .route("/results/{storage_id}/{filename}", get(download_result))
+        .route("/results/{owner}/{filename}", get(download_result))
 }
 
 /// Метаданные одного сформированного CSV для истории результатов.
 #[derive(Debug, Serialize)]
 struct ResultItem {
-    /// Непрозрачный каталог владельца, содержащий файл.
-    storage_id: Uuid,
+    /// `sAMAccountName` владельца каталога, содержащего файл.
+    owner: String,
     /// Имя файла, сформированное из даты и времени создания.
     filename: String,
     /// Дата и время создания в UTC.
@@ -49,7 +48,7 @@ async fn list_results(
 async fn download_result(
     State(_state): State<AppState>,
     _user: AuthenticatedUser,
-    Path((_storage_id, _filename)): Path<(Uuid, String)>,
+    Path((_owner, _filename)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
     todo!("authorize the caller and stream a CSV result")
 }

@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use axum::{extract::FromRequestParts, http::request::Parts};
-use uuid::Uuid;
 
 use crate::{
     api::cookies,
@@ -17,8 +16,6 @@ pub(super) struct AuthenticatedUser {
     pub(super) session_id: SessionId,
     /// Каноническое имя пользователя из `sAMAccountName`.
     pub(super) username: String,
-    /// Непрозрачный идентификатор группы файлов этой сессии.
-    pub(super) storage_id: Uuid,
     /// Credentials текущей сессии для LDAP-операций от имени вошедшего пользователя.
     pub(super) ldap_credentials: Arc<LdapCredentials>,
 }
@@ -35,7 +32,6 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         let session = state.sessions.get(&session_id).await?;
         tracing::info!(
             username = %session.username,
-            storage_id = %session.storage_id,
             ldap_identifier = session.ldap_credentials.identifier(),
             "authenticated user extraction completed"
         );
@@ -43,7 +39,6 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         Ok(Self {
             session_id,
             username: session.username,
-            storage_id: session.storage_id,
             ldap_credentials: session.ldap_credentials,
         })
     }

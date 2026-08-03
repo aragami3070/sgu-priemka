@@ -1,13 +1,12 @@
 use std::path::PathBuf;
 
 use time::OffsetDateTime;
-use uuid::Uuid;
 
 /// Внутренние метаданные одного сформированного CSV на диске.
 #[derive(Clone, Debug)]
 pub(crate) struct StoredResult {
-    /// UUID каталога, содержащего файл.
-    pub(crate) storage_id: Uuid,
+    /// `sAMAccountName` владельца каталога, содержащего файл.
+    pub(crate) owner: String,
     /// Имя файла, сформированное из даты и времени создания.
     pub(crate) filename: String,
     /// Проверенный путь к сформированному файлу.

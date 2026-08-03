@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use uuid::Uuid;
-
 use crate::entities::auth::LdapCredentials;
 
 /// Нормализованное представление строки исходного CSV до валидации.
@@ -60,8 +58,6 @@ pub(crate) struct ImportContext {
     pub(crate) job_id: String,
     /// `sAMAccountName` пользователя, запустившего импорт.
     pub(crate) username: String,
-    /// UUID каталога со сформированными файлами.
-    pub(crate) storage_id: Uuid,
     /// Credentials сессии, от имени которой выполняются все LDAP-операции импорта.
     pub(crate) ldap_credentials: Arc<LdapCredentials>,
     /// Имя загруженного файла для диагностики и аудита.

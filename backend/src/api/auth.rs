@@ -44,7 +44,7 @@ async fn login(
     let identity = state.ldap.authenticate(&identifier, &password).await?;
 
     let username = identity.username.clone();
-    let credentials = LdapCredentials::new(identifier, password);
+    let credentials = LdapCredentials::new(username.clone(), password);
     let previous_session_id = cookies::session_id_from_jar(&jar).ok();
     let expires_at = session_expiration(state.config.session_ttl)?;
     let (session_id, _) = state.sessions.create(identity, credentials).await?;

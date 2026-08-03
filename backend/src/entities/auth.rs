@@ -13,7 +13,7 @@ pub(crate) struct LdapIdentity {
 ///
 /// Тип намеренно не реализует `Debug`, чтобы пароль нельзя было случайно вывести в лог.
 pub(crate) struct LdapCredentials {
-    /// Короткий идентификатор, введённый пользователем при входе.
+    /// Канонический `sAMAccountName`, полученный после проверки пользователя в LDAP.
     identifier: String,
     /// Пароль LDAP, хранящийся только в памяти backend до удаления сессии.
     password: String,
@@ -28,7 +28,7 @@ impl LdapCredentials {
         }
     }
 
-    /// Возвращает идентификатор для формирования пользовательского bind-имени.
+    /// Возвращает канонический `sAMAccountName` для bind и каталога результатов.
     pub(crate) fn identifier(&self) -> &str {
         &self.identifier
     }
@@ -74,8 +74,6 @@ impl FromStr for SessionId {
 pub(crate) struct Session {
     /// Каноническое имя пользователя из `sAMAccountName`.
     pub(crate) username: String,
-    /// UUID группы результатов, созданных в этой сессии.
-    pub(crate) storage_id: Uuid,
     /// Credentials используются всеми LDAP-операциями, запущенными из этой сессии.
     pub(crate) ldap_credentials: Arc<LdapCredentials>,
     /// Момент, после которого локальная сессия считается истёкшей.

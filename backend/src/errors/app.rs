@@ -5,7 +5,7 @@ use axum::{
 };
 use thiserror::Error;
 
-use super::LdapAuthError;
+use super::{LdapAuthError, ResultError};
 
 /// Ошибки, которые прикладные сервисы могут передать в HTTP-слой.
 #[derive(Debug, Error)]
@@ -25,6 +25,9 @@ pub(crate) enum AppError {
     /// Входные данные не прошли бизнес-валидацию до начала записи в LDAP.
     #[error("validation failed: {0}")]
     Validation(String),
+    /// Запрошенный сохранённый результат отсутствует или уже истёк.
+    #[error("result not found")]
+    NotFound,
     /// LDAP-сервер не смог выполнить запрошенную операцию.
     #[error("LDAP is unavailable")]
     LdapUnavailable,
@@ -48,6 +51,7 @@ impl IntoResponse for AppError {
             ),
             Self::InvalidUpload(message) => (StatusCode::BAD_REQUEST, message),
             Self::Validation(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),
+            Self::NotFound => (StatusCode::NOT_FOUND, "result not found".to_owned()),
             Self::LdapUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "LDAP is unavailable".to_owned(),
@@ -78,5 +82,12 @@ impl From<LdapAuthError> for AppError {
                 Self::Internal
             }
         }
+    }
+}
+
+impl From<ResultError> for AppError {
+    fn from(error: ResultError) -> Self {
+        tracing::error!(%error, "mapping result service error to application error");
+        Self::Internal
     }
 }

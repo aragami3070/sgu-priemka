@@ -4,13 +4,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::sync::RwLock;
-use uuid::Uuid;
-
 use crate::{
     entities::auth::{LdapCredentials, LdapIdentity, Session, SessionId},
     errors::AppError,
 };
+use tokio::sync::RwLock;
 
 /// Хранилище локальных сессий в памяти.
 ///
@@ -31,7 +29,7 @@ impl SessionService {
         }
     }
 
-    /// Создаёт локальную сессию и отдельный UUID хранилища результатов.
+    /// Создаёт локальную сессию с credentials пользователя.
     pub(crate) async fn create(
         &self,
         identity: LdapIdentity,
@@ -42,7 +40,6 @@ impl SessionService {
             .ok_or(AppError::Internal)?;
         let session = Session {
             username: identity.username,
-            storage_id: Uuid::new_v4(),
             ldap_credentials: Arc::new(ldap_credentials),
             expires_at,
         };
@@ -58,7 +55,6 @@ impl SessionService {
         store.insert(id.clone(), session.clone());
         tracing::info!(
             username = %session.username,
-            storage_id = %session.storage_id,
             active_sessions = store.len(),
             "local session created and stored"
         );
@@ -87,7 +83,6 @@ impl SessionService {
 
         tracing::info!(
             username = %session.username,
-            storage_id = %session.storage_id,
             "valid local session found"
         );
         Ok(session.clone())
@@ -100,7 +95,6 @@ impl SessionService {
         match &removed {
             Some(session) => tracing::info!(
                 username = %session.username,
-                storage_id = %session.storage_id,
                 active_sessions = store.len(),
                 "local session removed"
             ),

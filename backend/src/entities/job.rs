@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 /// Прогресс или конечное состояние одной задачи импорта для фронтенда.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,8 +75,8 @@ pub(crate) enum JobStage {
 /// Адрес сформированного файла результата для API и событий задачи.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct ResultReference {
-    /// UUID каталога, содержащего результат.
-    pub(crate) storage_id: Uuid,
+    /// `sAMAccountName` владельца каталога, содержащего результат.
+    pub(crate) owner: String,
     /// Имя файла, сформированное из даты и времени создания.
     pub(crate) filename: String,
 }
