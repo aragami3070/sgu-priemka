@@ -13,6 +13,11 @@ pub(crate) enum JobStatus {
         /// Общее количество строк на текущем этапе.
         total: usize,
     },
+    /// Pipeline ждёт пакет исправлений конфликтующих логинов.
+    AwaitingLoginResolutions {
+        /// Все строки, которые конфликтуют на текущей итерации проверки.
+        conflicts: Vec<LoginConflict>,
+    },
     /// Все проверенные учётные записи студентов успешно созданы.
     Completed {
         /// Количество созданных учётных записей LDAP.
@@ -50,6 +55,43 @@ pub(crate) enum JobStatus {
         /// Полный итоговый CSV для проверки, повторного запуска или ручного отката.
         result: ResultReference,
     },
+}
+
+/// Сообщение, которое frontend может отправить в WebSocket задачи.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum JobClientMessage {
+    /// Предлагает замены для всех отображённых конфликтующих строк.
+    ResolveLogins {
+        /// Новые логины, сопоставленные строкам исходного CSV.
+        resolutions: Vec<LoginResolution>,
+    },
+}
+
+/// Одна строка интерактивной таблицы конфликтов.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct LoginConflict {
+    /// Номер исходной строки CSV с единицы.
+    pub(crate) row: usize,
+    /// Полное имя студента для распознавания строки преподавателем.
+    pub(crate) full_name: String,
+    /// Текущий сгенерированный или ранее предложенный логин.
+    pub(crate) login: String,
+    /// Причина, по которой строка осталась конфликтующей.
+    pub(crate) message: String,
+}
+
+/// Проверяемая pipeline-ом замена логина одной строки.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub(crate) struct LoginResolution {
+    pub(crate) row: usize,
+    pub(crate) login: String,
+}
+
+/// Один пакет замен из интерактивной таблицы.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LoginResolutionBatch {
+    pub(crate) resolutions: Vec<LoginResolution>,
 }
 
 impl JobStatus {

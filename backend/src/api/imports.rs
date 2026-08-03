@@ -2,17 +2,19 @@ use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart, Path, State, WebSocketUpgrade, ws::Message},
     http::StatusCode,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::Serialize;
+use std::sync::Arc;
+
 use tokio::sync::watch;
 
 use crate::{
     api::extractors::AuthenticatedUser,
     entities::{
         import::ImportContext,
-        job::{JobStage, JobStatus},
+        job::{JobClientMessage, JobStage, JobStatus, LoginResolutionBatch},
     },
     errors::AppError,
     state::AppState,
@@ -30,6 +32,7 @@ pub(super) fn routes() -> Router<AppState> {
                 MAX_CSV_SIZE + MULTIPART_OVERHEAD_ALLOWANCE,
             )),
         )
+        .route("/imports/active", get(active_import))
         .route("/imports/{job_id}/events", get(import_events))
 }
 
@@ -38,6 +41,23 @@ pub(super) fn routes() -> Router<AppState> {
 struct CreateImportResponse {
     /// Идентификатор задачи для подписки на события прогресса.
     job_id: String,
+}
+
+/// Текущая задача пользователя для восстановления страницы после reload.
+#[derive(Debug, Serialize)]
+struct ActiveImportResponse {
+    job_id: String,
+}
+
+/// Возвращает нетерминальную задачу текущего пользователя, если она существует.
+async fn active_import(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Response, AppError> {
+    match state.jobs.active_for_owner(&user.username).await {
+        Some(job_id) => Ok(Json(ActiveImportResponse { job_id }).into_response()),
+        None => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
 }
 
 /// Принимает один multipart CSV, создаёт задачу и запускает фоновую обработку.
@@ -82,7 +102,9 @@ async fn import_events(
 ) -> Result<Response, AppError> {
     let receiver = state.jobs.subscribe(&job_id, &user.username).await?;
     tracing::info!(%job_id, username = %user.username, "import event WebSocket accepted");
-    Ok(upgrade.on_upgrade(move |socket| stream_job_events(socket, job_id, receiver)))
+    Ok(upgrade.on_upgrade(move |socket| {
+        stream_job_events(socket, job_id, user.username, receiver, state.jobs)
+    }))
 }
 
 async fn read_csv_upload(mut multipart: Multipart) -> Result<(String, Vec<u8>), AppError> {
@@ -131,31 +153,70 @@ async fn read_csv_upload(mut multipart: Multipart) -> Result<(String, Vec<u8>), 
 async fn stream_job_events(
     mut socket: axum::extract::ws::WebSocket,
     job_id: String,
+    owner: String,
     mut receiver: watch::Receiver<JobStatus>,
+    jobs: Arc<crate::services::jobs::JobService>,
 ) {
+    let mut send_current_status = true;
     loop {
-        let status = receiver.borrow_and_update().clone();
-        let terminal = status.is_terminal();
-        let message = match serde_json::to_string(&status) {
-            Ok(message) => message,
-            Err(error) => {
-                tracing::error!(%job_id, %error, "failed to serialize import job status");
+        if send_current_status {
+            let status = receiver.borrow_and_update().clone();
+            let terminal = status.is_terminal();
+            let message = match serde_json::to_string(&status) {
+                Ok(message) => message,
+                Err(error) => {
+                    tracing::error!(%job_id, %error, "failed to serialize import job status");
+                    return;
+                }
+            };
+
+            if let Err(error) = socket.send(Message::Text(message.into())).await {
+                tracing::info!(%job_id, %error, "import event WebSocket disconnected");
                 return;
             }
-        };
+            if terminal {
+                tracing::info!(%job_id, "terminal import job status sent over WebSocket");
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
+            send_current_status = false;
+        }
 
-        if let Err(error) = socket.send(Message::Text(message.into())).await {
-            tracing::info!(%job_id, %error, "import event WebSocket disconnected");
-            return;
-        }
-        if terminal {
-            tracing::info!(%job_id, "terminal import job status sent over WebSocket");
-            let _ = socket.send(Message::Close(None)).await;
-            return;
-        }
-        if receiver.changed().await.is_err() {
-            tracing::info!(%job_id, "import job event channel closed");
-            return;
+        tokio::select! {
+            changed = receiver.changed() => {
+                if changed.is_err() {
+                    tracing::info!(%job_id, "import job event channel closed");
+                    return;
+                }
+                send_current_status = true;
+            }
+            incoming = socket.recv() => {
+                let Some(Ok(message)) = incoming else {
+                    tracing::info!(%job_id, "import event WebSocket disconnected");
+                    return;
+                };
+                match message {
+                    Message::Text(text) => match serde_json::from_str::<JobClientMessage>(&text) {
+                        Ok(JobClientMessage::ResolveLogins { resolutions }) => {
+                            if let Err(error) = jobs
+                                .submit_login_resolutions(
+                                    &job_id,
+                                    &owner,
+                                    LoginResolutionBatch { resolutions },
+                                )
+                                .await
+                            {
+                                tracing::warn!(%job_id, %error, "login resolution batch was rejected");
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%job_id, %error, "invalid import WebSocket message ignored");
+                        }
+                    },
+                    Message::Close(_) => return,
+                    _ => {}
+                }
+            }
         }
     }
 }

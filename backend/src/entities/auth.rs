@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr, sync::Arc, time::Instant};
+use std::{fmt, str::FromStr, sync::Arc, time::SystemTime};
 
 use uuid::Uuid;
 
@@ -15,7 +15,7 @@ pub(crate) struct LdapIdentity {
 pub(crate) struct LdapCredentials {
     /// Канонический `sAMAccountName`, полученный после проверки пользователя в LDAP.
     identifier: String,
-    /// Пароль LDAP, хранящийся только в памяти backend до удаления сессии.
+    /// Пароль LDAP, хранящийся в backend до удаления сессии.
     password: String,
 }
 
@@ -77,5 +77,5 @@ pub(crate) struct Session {
     /// Credentials используются всеми LDAP-операциями, запущенными из этой сессии.
     pub(crate) ldap_credentials: Arc<LdapCredentials>,
     /// Момент, после которого локальная сессия считается истёкшей.
-    pub(crate) expires_at: Instant,
+    pub(crate) expires_at: SystemTime,
 }

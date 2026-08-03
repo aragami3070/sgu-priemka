@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     entities::import::{PreparedIdentity, StudentInput},
@@ -40,6 +40,20 @@ pub(super) fn validate_students(
     }
 
     Ok(prepared)
+}
+
+/// Возвращает индексы всех строк, участвующих в конфликтах логинов.
+pub(super) fn find_login_collisions(identities: &[PreparedIdentity]) -> Vec<usize> {
+    let mut counts = HashMap::with_capacity(identities.len());
+    for identity in identities {
+        *counts.entry(identity.login.as_str()).or_insert(0usize) += 1;
+    }
+
+    identities
+        .iter()
+        .enumerate()
+        .filter_map(|(index, identity)| (counts[identity.login.as_str()] > 1).then_some(index))
+        .collect()
 }
 
 #[cfg(test)]
@@ -116,18 +130,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_generated_login() {
+    fn reports_duplicate_generated_login_for_interactive_resolution() {
         let first = student(2, "Иван", "Иванов", "Иванович");
         let second = student(11, "Игорь", "Иванов", "Ильич");
 
-        let error = validate_students(vec![first, second])
-            .expect_err("одинаковые логины внутри файла должны конфликтовать");
+        let prepared = validate_students(vec![first, second])
+            .expect("исправляемый конфликт логинов не должен останавливать валидацию");
 
-        assert!(matches!(
-            error,
-            ImportError::Collision { row: 11, attribute }
-                if attribute == "sAMAccountName"
-        ));
+        assert_eq!(find_login_collisions(&prepared), vec![0, 1]);
+        assert_eq!(prepared[0].source.source_row, 2);
+        assert_eq!(prepared[1].source.source_row, 11);
     }
 
     #[test]

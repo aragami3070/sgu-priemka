@@ -4,7 +4,11 @@ mod credentials;
 mod parser;
 mod validation;
 
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use tokio::sync::Semaphore;
 
@@ -12,13 +16,24 @@ use crate::{
     config::Config,
     entities::{
         import::{ImportContext, PreparedStudent},
-        job::{JobStage, JobStatus, ResultReference},
+        job::{JobStage, JobStatus, LoginConflict, LoginResolution, ResultReference},
     },
     errors::{AppError, ImportError},
     services::{jobs::JobService, ldap::LdapService, results::ResultService},
 };
 
-use self::{credentials::generate_password, parser::parse_csv, validation::validate_students};
+use self::{
+    credentials::{generate_password, normalize_conflict_login},
+    parser::parse_csv,
+    validation::{find_login_collisions, validate_students},
+};
+
+const LOGIN_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+enum LoginResolutionResult {
+    Resolved(Vec<LoginResolution>),
+    TimedOut(JobStatus),
+}
 
 /// Управляет полным pipeline импорта студентов.
 pub(crate) struct ImportService {
@@ -89,7 +104,7 @@ impl ImportService {
         self.publish_progress(&context.job_id, JobStage::Validating, 0, total)
             .await?;
         let validation = tokio::task::spawn_blocking(move || validate_students(students)).await;
-        let identities = match validation {
+        let mut identities = match validation {
             Ok(Ok(identities)) => identities,
             Ok(Err(error)) => return self.finish_import_error(&context.job_id, error).await,
             Err(error) => {
@@ -103,6 +118,12 @@ impl ImportService {
                     .await;
             }
         };
+        if let Some(status) = self
+            .resolve_csv_login_conflicts(&context.job_id, &mut identities)
+            .await?
+        {
+            return Ok(status);
+        }
         self.publish_progress(&context.job_id, JobStage::Validating, total, total)
             .await?;
 
@@ -191,6 +212,162 @@ impl ImportService {
                 },
             )
             .await
+    }
+
+    /// Запрашивает у frontend пакет замен всех конфликтующих внутри CSV логинов.
+    ///
+    /// После каждого ответа весь набор проверяется заново, поэтому старое или уже
+    /// занятое другой строкой значение снова приводит к тому же запросу.
+    async fn resolve_csv_login_conflicts(
+        &self,
+        job_id: &str,
+        identities: &mut [crate::entities::import::PreparedIdentity],
+    ) -> Result<Option<JobStatus>, AppError> {
+        loop {
+            let indices = find_login_collisions(identities);
+            if indices.is_empty() {
+                return Ok(None);
+            }
+            let conflicts = indices
+                .iter()
+                .map(|&index| {
+                    let identity = &identities[index];
+                    LoginConflict {
+                        row: identity.source.source_row,
+                        full_name: format!(
+                            "{} {} {}",
+                            identity.source.last_name.trim(),
+                            identity.source.first_name.trim(),
+                            identity.source.patronymic.trim()
+                        ),
+                        login: identity.login.clone(),
+                        message: format!(
+                            "Логин `{}` используется несколькими строками этого CSV",
+                            identity.login
+                        ),
+                    }
+                })
+                .collect();
+
+            match self
+                .request_login_resolution(job_id, JobStage::Validating, conflicts)
+                .await?
+            {
+                LoginResolutionResult::Resolved(resolutions) => {
+                    let resolutions = resolutions
+                        .into_iter()
+                        .map(|resolution| (resolution.row, resolution.login))
+                        .collect::<HashMap<_, _>>();
+                    for &index in &indices {
+                        let identity = &mut identities[index];
+                        if let Some(login) = resolutions.get(&identity.source.source_row) {
+                            identity.login.clone_from(login);
+                        }
+                    }
+                    tracing::info!(
+                        %job_id,
+                        submitted_logins = resolutions.len(),
+                        "replacement login batch accepted for repeated validation"
+                    );
+                }
+                LoginResolutionResult::TimedOut(status) => return Ok(Some(status)),
+            }
+        }
+    }
+
+    /// Единый WebSocket-диалог для конфликтов внутри CSV и будущих LDAP-конфликтов.
+    async fn request_login_resolution(
+        &self,
+        job_id: &str,
+        stage: JobStage,
+        mut conflicts: Vec<LoginConflict>,
+    ) -> Result<LoginResolutionResult, AppError> {
+        loop {
+            self.jobs
+                .publish(
+                    job_id,
+                    JobStatus::AwaitingLoginResolutions {
+                        conflicts: conflicts.clone(),
+                    },
+                )
+                .await?;
+            tracing::info!(
+                %job_id,
+                conflicts = conflicts.len(),
+                "import pipeline is waiting for login conflict resolution batch"
+            );
+
+            let batch = match tokio::time::timeout(
+                LOGIN_RESOLUTION_TIMEOUT,
+                self.jobs.wait_for_login_resolutions(job_id),
+            )
+            .await
+            {
+                Ok(resolution) => resolution?,
+                Err(_) => {
+                    let status = JobStatus::Failed {
+                        stage,
+                        code: "login_resolution_timeout".to_owned(),
+                        message: "Время ожидания исправлений логинов истекло".to_owned(),
+                        row: None,
+                    };
+                    self.jobs.publish(job_id, status.clone()).await?;
+                    tracing::warn!(%job_id, "login conflict resolution batch timed out");
+                    return Ok(LoginResolutionResult::TimedOut(status));
+                }
+            };
+
+            let expected_rows = conflicts
+                .iter()
+                .map(|conflict| conflict.row)
+                .collect::<HashSet<_>>();
+            let mut submitted = HashMap::with_capacity(batch.resolutions.len());
+            let mut duplicated_rows = HashSet::new();
+            for resolution in batch.resolutions {
+                if expected_rows.contains(&resolution.row)
+                    && submitted.insert(resolution.row, resolution.login).is_some()
+                {
+                    duplicated_rows.insert(resolution.row);
+                }
+            }
+
+            let mut normalized = Vec::with_capacity(conflicts.len());
+            let mut has_errors = false;
+            for conflict in &mut conflicts {
+                if duplicated_rows.contains(&conflict.row) {
+                    conflict.message = "Для строки передано несколько логинов".to_owned();
+                    has_errors = true;
+                    continue;
+                }
+                let Some(login) = submitted.remove(&conflict.row) else {
+                    conflict.message = "Введите логин для этой строки".to_owned();
+                    has_errors = true;
+                    continue;
+                };
+                conflict.login = login.trim().to_owned();
+                match normalize_conflict_login(conflict.row, &login) {
+                    Ok(login) => normalized.push(LoginResolution {
+                        row: conflict.row,
+                        login,
+                    }),
+                    Err(ImportError::Validation {
+                        message: validation_message,
+                        ..
+                    }) => {
+                        conflict.message = validation_message;
+                        has_errors = true;
+                    }
+                    Err(error) => {
+                        conflict.message = error.to_string();
+                        has_errors = true;
+                    }
+                }
+            }
+
+            if !has_errors {
+                return Ok(LoginResolutionResult::Resolved(normalized));
+            }
+        }
     }
 
     async fn finish_import_error(
@@ -368,35 +545,127 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn csv_collision_fails_job_without_creating_result() {
+    async fn csv_login_collision_is_resolved_and_revalidated() {
         let directory = TestDirectory::new();
         let (service, jobs) = service(&directory);
         let context = context(&jobs).await;
+        let job_id = context.job_id.clone();
+        let username = context.username.clone();
+        let mut events = jobs
+            .subscribe(&job_id, &username)
+            .await
+            .expect("владелец должен подписаться");
         let csv = concat!(
             "First,Last,Patronymic,Email,Group\n",
             "Иван,Иванов,Иванович,ivan@example.com,001\n",
             "Игорь,Иванов,Ильич,igor@example.com,002\n",
+            "Пётр,Петров,Петрович,petr@example.com,003\n",
+            "Павел,Петров,Петрович,pavel@example.com,004\n",
         );
 
-        let status = service
-            .run(context, csv.as_bytes().to_vec())
+        let pipeline =
+            tokio::spawn(async move { service.run(context, csv.as_bytes().to_vec()).await });
+
+        loop {
+            tokio::time::timeout(Duration::from_secs(1), events.changed())
+                .await
+                .expect("таймаут ожидания таблицы конфликтов")
+                .expect("статус конфликта должен прийти");
+            if let JobStatus::AwaitingLoginResolutions { conflicts } = &*events.borrow_and_update()
+            {
+                assert_eq!(
+                    conflicts
+                        .iter()
+                        .map(|conflict| conflict.row)
+                        .collect::<Vec<_>>(),
+                    vec![2, 3, 4, 5]
+                );
+                assert_eq!(conflicts[0].full_name, "Иванов Иван Иванович");
+                break;
+            }
+        }
+
+        jobs.submit_login_resolutions(
+            &job_id,
+            &username,
+            crate::entities::job::LoginResolutionBatch {
+                resolutions: vec![
+                    crate::entities::job::LoginResolution {
+                        row: 2,
+                        login: "ivanovii".to_owned(),
+                    },
+                    crate::entities::job::LoginResolution {
+                        row: 3,
+                        login: "ivanovii2".to_owned(),
+                    },
+                    crate::entities::job::LoginResolution {
+                        row: 4,
+                        login: "petrovpp".to_owned(),
+                    },
+                    crate::entities::job::LoginResolution {
+                        row: 5,
+                        login: "petrovpp".to_owned(),
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("пакет замен должен быть принят на проверку");
+
+        tokio::time::timeout(Duration::from_secs(1), events.changed())
             .await
-            .expect("validation failure должна быть terminal status");
+            .expect("таймаут ожидания оставшихся конфликтов")
+            .expect("оставшиеся конфликты должны прийти");
+        {
+            let status = events.borrow_and_update();
+            let JobStatus::AwaitingLoginResolutions { conflicts } = &*status else {
+                panic!("ожидалась обновлённая таблица конфликтов")
+            };
+            assert_eq!(
+                conflicts
+                    .iter()
+                    .map(|conflict| conflict.row)
+                    .collect::<Vec<_>>(),
+                vec![4, 5]
+            );
+        }
 
-        assert!(matches!(
-            status,
-            JobStatus::Failed {
-                stage: JobStage::Validating,
-                code,
-                row: Some(3),
-                ..
-            } if code == "csv_collision"
-        ));
-        assert!(
-            std::fs::read_dir(&directory.0)
-                .expect("корневой каталог должен читаться")
+        jobs.submit_login_resolutions(
+            &job_id,
+            &username,
+            crate::entities::job::LoginResolutionBatch {
+                resolutions: vec![
+                    crate::entities::job::LoginResolution {
+                        row: 4,
+                        login: "petrovpp".to_owned(),
+                    },
+                    crate::entities::job::LoginResolution {
+                        row: 5,
+                        login: "petrovpp2".to_owned(),
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("уникальная замена должна быть принята");
+
+        let status = tokio::time::timeout(Duration::from_secs(1), pipeline)
+            .await
+            .expect("таймаут завершения pipeline")
+            .expect("pipeline task не должна паниковать")
+            .expect("pipeline должен завершиться");
+
+        assert!(matches!(status, JobStatus::Completed { total: 4, .. }));
+        let output = std::fs::read_to_string(
+            std::fs::read_dir(directory.0.join("admin"))
+                .expect("каталог результата должен читаться")
                 .next()
-                .is_none()
-        );
+                .expect("результат должен существовать")
+                .expect("запись каталога должна читаться")
+                .path(),
+        )
+        .expect("итоговый CSV должен читаться");
+        assert!(output.contains("ivanovii2"));
+        assert!(output.contains("petrovpp2"));
     }
 }

@@ -1,12 +1,16 @@
 use std::{
     collections::HashMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use uuid::Uuid;
 
-use crate::{entities::job::JobStatus, errors::AppError};
+use crate::{
+    entities::job::{JobStatus, LoginResolutionBatch},
+    errors::AppError,
+};
 
 const TERMINAL_JOB_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -15,6 +19,8 @@ struct Job {
     owner: String,
     status_sender: watch::Sender<JobStatus>,
     terminal_at: Option<Instant>,
+    resolution_sender: mpsc::Sender<LoginResolutionBatch>,
+    resolution_receiver: Arc<Mutex<mpsc::Receiver<LoginResolutionBatch>>>,
 }
 
 /// Реестр задач импорта и их watch-каналов в памяти.
@@ -37,7 +43,15 @@ impl JobService {
     ) -> Result<String, AppError> {
         let terminal_at = initial_status.is_terminal().then(Instant::now);
         let (status_sender, _) = watch::channel(initial_status);
+        let (resolution_sender, resolution_receiver) = mpsc::channel(8);
         let mut store = self.store.write().await;
+        if let Some((job_id, _)) = store
+            .iter()
+            .find(|(_, job)| job.owner == owner && job.terminal_at.is_none())
+        {
+            tracing::info!(%job_id, %owner, "active import job already exists for owner");
+            return Err(AppError::ImportBusy);
+        }
         let job_id = loop {
             let candidate = Uuid::new_v4().to_string();
             if !store.contains_key(&candidate) {
@@ -51,10 +65,70 @@ impl JobService {
                 owner: owner.clone(),
                 status_sender,
                 terminal_at,
+                resolution_sender,
+                resolution_receiver: Arc::new(Mutex::new(resolution_receiver)),
             },
         );
         tracing::info!(%job_id, %owner, active_jobs = store.len(), "import job created");
         Ok(job_id)
+    }
+
+    /// Возвращает текущую нетерминальную задачу пользователя для переподключения.
+    pub(crate) async fn active_for_owner(&self, owner: &str) -> Option<String> {
+        let store = self.store.read().await;
+        let active = store
+            .iter()
+            .find(|(_, job)| job.owner == owner && job.terminal_at.is_none())
+            .map(|(job_id, _)| job_id.clone());
+        tracing::info!(
+            %owner,
+            active_job_id = active.as_deref().unwrap_or("none"),
+            "active import job lookup completed"
+        );
+        active
+    }
+
+    /// Передаёт введённую оператором замену ожидающему pipeline-у.
+    pub(crate) async fn submit_login_resolutions(
+        &self,
+        job_id: &str,
+        owner: &str,
+        resolutions: LoginResolutionBatch,
+    ) -> Result<(), AppError> {
+        let sender = {
+            let store = self.store.read().await;
+            let job = store.get(job_id).ok_or(AppError::NotFound)?;
+            if job.owner != owner {
+                tracing::warn!(%job_id, requested_by = %owner, "import login resolution denied");
+                return Err(AppError::Forbidden);
+            }
+            job.resolution_sender.clone()
+        };
+
+        sender
+            .send(resolutions)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        tracing::info!(%job_id, %owner, "import login resolution batch submitted");
+        Ok(())
+    }
+
+    /// Ждёт следующую замену логина, отправленную владельцем задачи.
+    pub(crate) async fn wait_for_login_resolutions(
+        &self,
+        job_id: &str,
+    ) -> Result<LoginResolutionBatch, AppError> {
+        let receiver = {
+            let store = self.store.read().await;
+            store
+                .get(job_id)
+                .map(|job| job.resolution_receiver.clone())
+                .ok_or(AppError::NotFound)?
+        };
+
+        // Реестр job-ов здесь уже не заблокирован: долгое ожидание держит
+        // только receiver конкретной задачи и не мешает create/cleanup/publish.
+        receiver.lock().await.recv().await.ok_or(AppError::Internal)
     }
 
     /// Сохраняет последний статус и отправляет его подписчикам.
@@ -97,6 +171,7 @@ impl JobService {
 
     /// Удаляет terminal-задачи через десять минут после завершения.
     pub(crate) async fn cleanup_expired(&self) {
+        tracing::info!("starting expired import job cleanup");
         let now = Instant::now();
         let mut store = self.store.write().await;
         let before = store.len();
@@ -116,7 +191,7 @@ impl JobService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entities::job::JobStage;
+    use crate::entities::job::{JobStage, LoginResolution};
 
     fn progress(current: usize) -> JobStatus {
         JobStatus::Progress {
@@ -185,5 +260,132 @@ mod tests {
             jobs.publish(&job_id, progress(1)).await,
             Err(AppError::Internal)
         ));
+    }
+
+    #[tokio::test]
+    async fn owner_can_submit_login_resolution_batch() {
+        let jobs = JobService::new();
+        let job_id = jobs
+            .create("admin".to_owned(), progress(0))
+            .await
+            .expect("job должна создаться");
+        let expected = LoginResolutionBatch {
+            resolutions: vec![
+                LoginResolution {
+                    row: 2,
+                    login: "ivanovii".to_owned(),
+                },
+                LoginResolution {
+                    row: 3,
+                    login: "ivanovii2".to_owned(),
+                },
+            ],
+        };
+
+        jobs.submit_login_resolutions(&job_id, "admin", expected.clone())
+            .await
+            .expect("владелец должен отправить замену");
+
+        assert_eq!(
+            jobs.wait_for_login_resolutions(&job_id)
+                .await
+                .expect("pipeline должен получить замену"),
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn another_owner_cannot_submit_login_resolution_batch() {
+        let jobs = JobService::new();
+        let job_id = jobs
+            .create("admin".to_owned(), progress(0))
+            .await
+            .expect("job должна создаться");
+
+        assert!(matches!(
+            jobs.submit_login_resolutions(
+                &job_id,
+                "another-admin",
+                LoginResolutionBatch {
+                    resolutions: vec![LoginResolution {
+                        row: 3,
+                        login: "ivanovii2".to_owned(),
+                    }],
+                },
+            )
+            .await,
+            Err(AppError::Forbidden)
+        ));
+    }
+
+    #[tokio::test]
+    async fn waiting_for_resolution_does_not_block_registry_or_allow_second_job_for_owner() {
+        let jobs = Arc::new(JobService::new());
+        let waiting_job_id = jobs
+            .create("admin".to_owned(), progress(0))
+            .await
+            .expect("первая job должна создаться");
+        let waiting_jobs = jobs.clone();
+        let waiting_id = waiting_job_id.clone();
+        let waiter =
+            tokio::spawn(async move { waiting_jobs.wait_for_login_resolutions(&waiting_id).await });
+        tokio::task::yield_now().await;
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            jobs.create("admin".to_owned(), progress(0)),
+        )
+        .await
+        .expect("проверка второй job не должна зависать")
+        .expect_err("вторая активная job пользователя должна быть запрещена");
+        tokio::time::timeout(Duration::from_millis(100), jobs.cleanup_expired())
+            .await
+            .expect("ожидание ответа не должно блокировать cleanup job-ов");
+
+        jobs.submit_login_resolutions(
+            &waiting_job_id,
+            "admin",
+            LoginResolutionBatch {
+                resolutions: vec![LoginResolution {
+                    row: 2,
+                    login: "ivanovii2".to_owned(),
+                }],
+            },
+        )
+        .await
+        .expect("ожидающая job должна принять ответ");
+        waiter
+            .await
+            .expect("задача ожидания не должна паниковать")
+            .expect("ответ должен дойти до ожидающей job");
+    }
+
+    #[tokio::test]
+    async fn active_job_is_returned_until_it_becomes_terminal() {
+        let jobs = JobService::new();
+        let job_id = jobs
+            .create("admin".to_owned(), progress(0))
+            .await
+            .expect("job должна создаться");
+
+        assert_eq!(jobs.active_for_owner("admin").await, Some(job_id.clone()));
+        assert_eq!(jobs.active_for_owner("another-admin").await, None);
+
+        jobs.publish(
+            &job_id,
+            JobStatus::Failed {
+                stage: JobStage::Validating,
+                code: "cancelled".to_owned(),
+                message: "cancelled".to_owned(),
+                row: None,
+            },
+        )
+        .await
+        .expect("job должна стать terminal");
+
+        assert_eq!(jobs.active_for_owner("admin").await, None);
+        jobs.create("admin".to_owned(), progress(0))
+            .await
+            .expect("после terminal job пользователь может создать новую");
     }
 }
