@@ -293,6 +293,12 @@
   background: #f7f9f8;
 }
 
+.results-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
 .results-empty {
   height: 250px;
   border-bottom: none !important;
@@ -304,10 +310,6 @@
   gap: 8px;
   color: #77827f;
   text-align: center;
-}
-
-.results-download-placeholder {
-  display: none !important;
 }
 
 @media (max-width: 800px) {
