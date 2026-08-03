@@ -11,6 +11,10 @@ export interface LoginResponse {
   expires_at: string;
 }
 
+export interface WhoAmIResponse {
+  username: string;
+}
+
 interface ApiErrorEnvelope {
   message?: string;
   error?: {
@@ -25,6 +29,11 @@ export async function login(request: LoginRequest): Promise<LoginResponse> {
 
 export async function logout(): Promise<void> {
   await apiClient.post("/auth/logout");
+}
+
+export async function whoami(): Promise<WhoAmIResponse> {
+  const response = await apiClient.get<WhoAmIResponse>("/auth/whoami");
+  return response.data;
 }
 
 export function getLoginErrorMessage(error: unknown): string {

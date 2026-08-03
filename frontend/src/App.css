@@ -42,6 +42,14 @@
   background-size: 32px 32px;
 }
 
+.auth-loading {
+  min-height: 100svh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 16px;
+}
+
 .login-page__brand {
   justify-self: start;
 }
@@ -208,6 +216,21 @@
   display: flex;
   justify-content: flex-end;
   margin-top: 18px;
+}
+
+.login-conflicts {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.login-conflicts__table {
+  min-width: 680px;
+}
+
+.login-conflicts__actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .import-backdrop {

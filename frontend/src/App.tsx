@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { login, logout } from './api/auth'
+import { useEffect, useState } from 'react'
+import { Box, CircularProgress, Typography } from '@mui/material'
+import { login, logout, whoami } from './api/auth'
 import { AppShell } from './components/AppShell'
 import { ImportPage } from './pages/ImportPage'
 import { LoginPage } from './pages/LoginPage'
@@ -9,7 +10,27 @@ import './App.css'
 
 function App() {
   const [user, setUser] = useState<AuthUser | null>(null)
+  const [isCheckingSession, setIsCheckingSession] = useState(true)
   const [view, setView] = useState<AppView>('import')
+
+  useEffect(() => {
+    let cancelled = false
+
+    void whoami()
+      .then((response) => {
+        if (!cancelled) setUser({ username: response.username })
+      })
+      .catch(() => {
+        if (!cancelled) setUser(null)
+      })
+      .finally(() => {
+        if (!cancelled) setIsCheckingSession(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleLogin = async (identifier: string, password: string) => {
     const response = await login({ identifier, password })
@@ -34,6 +55,15 @@ function App() {
 
     setUser(null)
     setView('import')
+  }
+
+  if (isCheckingSession) {
+    return (
+      <Box className="auth-loading" role="status" aria-live="polite">
+        <CircularProgress size={42} />
+        <Typography color="text.secondary">Проверка сессии…</Typography>
+      </Box>
+    )
   }
 
   if (!user) {
