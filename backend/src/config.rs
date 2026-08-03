@@ -3,7 +3,6 @@ use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 use crate::errors::ConfigError;
 
 const DEFAULT_SESSION_TTL_SECONDS: u64 = 60 * 60;
-const DEFAULT_RESULT_TTL_SECONDS: u64 = 24 * 60 * 60;
 const DEFAULT_RESULT_OUTPUT_DIR: &str = "output";
 
 /// Полная конфигурация приложения, общая для прикладных сервисов.
@@ -17,7 +16,7 @@ pub(crate) struct Config {
     pub(crate) session_ttl: Duration,
     /// Параметры подключения и целевой контейнер LDAP.
     pub(crate) ldap: LdapConfig,
-    /// Расположение и срок хранения итоговых CSV-файлов.
+    /// Расположение итоговых CSV-файлов.
     pub(crate) results: ResultConfig,
     /// Серверная соль для вычисления временных паролей студентов.
     pub(crate) salt: String,
@@ -91,8 +90,6 @@ impl LdapConfig {
 pub(crate) struct ResultConfig {
     /// Корневой каталог со сформированными файлами.
     pub(crate) output_dir: PathBuf,
-    /// Срок, после которого сформированные файлы можно удалить.
-    pub(crate) ttl: Duration,
 }
 
 impl ResultConfig {
@@ -100,7 +97,6 @@ impl ResultConfig {
     fn load() -> Result<Self, ConfigError> {
         Ok(Self {
             output_dir: PathBuf::from(optional_or("RESULT_OUTPUT_DIR", DEFAULT_RESULT_OUTPUT_DIR)),
-            ttl: duration_or("RESULT_TTL_SECONDS", DEFAULT_RESULT_TTL_SECONDS)?,
         })
     }
 }
@@ -215,7 +211,6 @@ mod tests {
         "LDAP_USERS_CONTAINER_DN",
         "LDAP_CSIT_ADMINS_GROUP_DN",
         "RESULT_OUTPUT_DIR",
-        "RESULT_TTL_SECONDS",
         "PASSWORD_SALT",
     ];
 
@@ -295,7 +290,6 @@ mod tests {
             ("COOKIE_SECURE", "false"),
             ("SESSION_TTL_SECONDS", "1800"),
             ("RESULT_OUTPUT_DIR", "/tmp/sgu-priemka-results"),
-            ("RESULT_TTL_SECONDS", "7200"),
             ("PASSWORD_SALT", " password salt "),
         ]);
 
@@ -322,7 +316,6 @@ mod tests {
             config.results.output_dir,
             PathBuf::from("/tmp/sgu-priemka-results")
         );
-        assert_eq!(config.results.ttl, Duration::from_secs(7200));
         assert_eq!(config.salt, " password salt ");
     }
 
@@ -340,7 +333,6 @@ mod tests {
         assert!(config.cookie_secure);
         assert_eq!(config.session_ttl, Duration::from_secs(3600));
         assert_eq!(config.results.output_dir, PathBuf::from("output"));
-        assert_eq!(config.results.ttl, Duration::from_secs(86400));
     }
 
     #[test]
@@ -380,7 +372,6 @@ mod tests {
             ("LISTEN_ADDR", "localhost"),
             ("COOKIE_SECURE", "yes"),
             ("SESSION_TTL_SECONDS", "invalid"),
-            ("RESULT_TTL_SECONDS", "0"),
         ] {
             let _environment = TestEnvironment::new(&[(name, value)]);
             let error = config_error(Config::from_env());

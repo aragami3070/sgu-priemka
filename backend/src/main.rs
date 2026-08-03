@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Периодически очищает истёкшие сессии, terminal Job и итоговые CSV.
+/// Периодически очищает истёкшие сессии и terminal Job.
 fn spawn_cleanup_task(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
@@ -43,9 +43,6 @@ fn spawn_cleanup_task(state: AppState) {
             interval.tick().await;
             state.sessions.cleanup_expired().await;
             state.jobs.cleanup_expired().await;
-            if let Err(error) = state.results.cleanup_expired().await {
-                tracing::error!(%error, "periodic result cleanup failed");
-            }
         }
     });
 }

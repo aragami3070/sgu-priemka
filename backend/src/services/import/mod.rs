@@ -460,7 +460,6 @@ mod tests {
             },
             results: ResultConfig {
                 output_dir: directory.0.clone(),
-                ttl: Duration::from_secs(60),
             },
             salt: "test-salt".to_owned(),
         })

@@ -3,7 +3,6 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
-    time::SystemTime,
 };
 
 use csv::{Terminator, WriterBuilder};
@@ -109,7 +108,7 @@ impl ResultService {
         })
     }
 
-    /// Возвращает результаты всех администраторов, которые ещё не истекли.
+    /// Возвращает все сохранённые результаты всех администраторов.
     pub(crate) async fn list(&self) -> Result<Vec<StoredResult>, AppError> {
         let mut results = Vec::new();
         let mut owners = fs::read_dir(&self.config.results.output_dir)
@@ -162,17 +161,12 @@ impl ResultService {
         validate_result_filename(filename)?;
 
         let path = self.config.results.output_dir.join(owner).join(filename);
-        let metadata = match fs::symlink_metadata(&path).await {
+        match fs::symlink_metadata(&path).await {
             Ok(metadata) if metadata.file_type().is_file() => metadata,
             Ok(_) => return Err(AppError::NotFound),
             Err(error) if error.kind() == ErrorKind::NotFound => return Err(AppError::NotFound),
             Err(error) => return Err(storage_error("inspect result", &path, error).into()),
         };
-
-        if is_expired(&metadata, self.config.results.ttl)? {
-            tracing::info!(%owner, %filename, "expired result read rejected");
-            return Err(AppError::NotFound);
-        }
 
         let bytes = fs::read(&path)
             .await
@@ -181,85 +175,43 @@ impl ResultService {
         Ok(bytes)
     }
 
-    /// Удаляет результаты старше настроенного срока хранения и пустые каталоги владельцев.
-    pub(crate) async fn cleanup_expired(&self) -> Result<(), AppError> {
-        let mut removed_files = 0usize;
-        let mut removed_directories = 0usize;
-        let mut owners = fs::read_dir(&self.config.results.output_dir)
-            .await
-            .map_err(|error| {
-                storage_error(
-                    "scan result storage for cleanup",
-                    &self.config.results.output_dir,
-                    error,
-                )
-            })?;
+    /// Удаляет выбранный результат и ставший пустым каталог владельца.
+    pub(crate) async fn delete(&self, owner: &str, filename: &str) -> Result<(), AppError> {
+        validate_path_segment(owner, "result owner")?;
+        validate_result_filename(filename)?;
 
-        while let Some(owner_entry) = owners.next_entry().await.map_err(|error| {
-            storage_error(
-                "read result owner during cleanup",
-                &self.config.results.output_dir,
-                error,
-            )
-        })? {
-            let owner_path = owner_entry.path();
-            if !owner_entry
-                .file_type()
-                .await
-                .map_err(|error| storage_error("inspect result owner", &owner_path, error))?
-                .is_dir()
-            {
-                continue;
-            }
-
-            let mut files = fs::read_dir(&owner_path)
-                .await
-                .map_err(|error| storage_error("scan owner results", &owner_path, error))?;
-            while let Some(file_entry) = files.next_entry().await.map_err(|error| {
-                storage_error("read owner result during cleanup", &owner_path, error)
-            })? {
-                let file_path = file_entry.path();
-                if !file_entry
-                    .file_type()
-                    .await
-                    .map_err(|error| {
-                        storage_error("inspect result type during cleanup", &file_path, error)
-                    })?
-                    .is_file()
-                {
-                    continue;
-                }
-                let metadata = file_entry.metadata().await.map_err(|error| {
-                    storage_error("inspect result during cleanup", &file_path, error)
-                })?;
-                if is_expired(&metadata, self.config.results.ttl)? {
-                    fs::remove_file(&file_path).await.map_err(|error| {
-                        storage_error("remove expired result", &file_path, error)
-                    })?;
-                    removed_files += 1;
-                }
-            }
-
-            if fs::read_dir(&owner_path)
-                .await
-                .map_err(|error| storage_error("rescan result owner", &owner_path, error))?
-                .next_entry()
-                .await
-                .map_err(|error| storage_error("check empty result owner", &owner_path, error))?
-                .is_none()
-            {
-                fs::remove_dir(&owner_path).await.map_err(|error| {
-                    storage_error("remove empty result owner", &owner_path, error)
-                })?;
-                removed_directories += 1;
+        let owner_dir = self.config.results.output_dir.join(owner);
+        let path = owner_dir.join(filename);
+        match fs::symlink_metadata(&path).await {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return Err(AppError::NotFound),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Err(AppError::NotFound),
+            Err(error) => {
+                return Err(storage_error("inspect result for deletion", &path, error).into());
             }
         }
 
-        tracing::info!(
-            removed_files,
-            removed_directories,
-            "expired result cleanup completed"
-        );
+        fs::remove_file(&path)
+            .await
+            .map_err(|error| storage_error("delete result", &path, error))?;
+        match fs::remove_dir(&owner_dir).await {
+            Ok(()) => tracing::info!(%owner, "empty result owner directory removed"),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::DirectoryNotEmpty | ErrorKind::NotFound
+                ) => {}
+            Err(error) => {
+                tracing::warn!(
+                    %owner,
+                    path = %owner_dir.display(),
+                    %error,
+                    "result CSV was deleted, but its empty owner directory could not be removed"
+                );
+            }
+        }
+
+        tracing::info!(%owner, %filename, "result CSV deleted manually");
         Ok(())
     }
 
@@ -314,9 +266,6 @@ impl ResultService {
             .metadata()
             .await
             .map_err(|error| storage_error("inspect result file", &path, error))?;
-        if is_expired(&metadata, self.config.results.ttl)? {
-            return Ok(None);
-        }
 
         let Some(filename) = entry.file_name().to_str().map(str::to_owned) else {
             tracing::warn!(path = %path.display(), "skipping non-UTF-8 result filename");
@@ -385,14 +334,13 @@ fn serialize_students(students: &[PreparedStudent]) -> Result<Vec<u8>, AppError>
 
 fn result_filename(created_at: OffsetDateTime) -> String {
     format!(
-        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}_{:09}.csv",
+        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.csv",
         created_at.year(),
         u8::from(created_at.month()),
         created_at.day(),
         created_at.hour(),
         created_at.minute(),
         created_at.second(),
-        created_at.nanosecond(),
     )
 }
 
@@ -416,18 +364,6 @@ fn validate_path_segment(value: &str, kind: &'static str) -> Result<(), AppError
     } else {
         Ok(())
     }
-}
-
-fn is_expired(metadata: &std::fs::Metadata, ttl: std::time::Duration) -> Result<bool, AppError> {
-    Ok(SystemTime::now()
-        .duration_since(metadata.modified().map_err(|error| {
-            storage_error(
-                "read result modification time",
-                Path::new("<metadata>"),
-                error,
-            )
-        })?)
-        .is_ok_and(|age| age >= ttl))
 }
 
 fn storage_error(operation: &'static str, path: &Path, source: std::io::Error) -> ResultError {
@@ -469,7 +405,7 @@ mod tests {
         }
     }
 
-    fn service(directory: &TestDirectory, ttl: Duration) -> ResultService {
+    fn service(directory: &TestDirectory) -> ResultService {
         let config = Config {
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
             cookie_secure: false,
@@ -483,7 +419,6 @@ mod tests {
             },
             results: ResultConfig {
                 output_dir: directory.0.clone(),
-                ttl,
             },
             salt: "test-salt".to_owned(),
         };
@@ -511,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn creates_reads_and_lists_result_under_ldap_identifier() {
         let directory = TestDirectory::new();
-        let service = service(&directory, Duration::from_secs(60));
+        let service = service(&directory);
         let credentials =
             LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
 
@@ -548,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_unsafe_owner_without_creating_external_path() {
         let directory = TestDirectory::new();
-        let service = service(&directory, Duration::from_secs(60));
+        let service = service(&directory);
         let credentials = LdapCredentials::new("../admin".to_owned(), "password".to_owned());
 
         let error = service
@@ -562,7 +497,7 @@ mod tests {
     #[tokio::test]
     async fn returns_not_found_for_missing_or_unsafe_result() {
         let directory = TestDirectory::new();
-        let service = service(&directory, Duration::from_secs(60));
+        let service = service(&directory);
 
         assert!(matches!(
             service.read("gadzhiev-mamedovar", "missing.csv").await,
@@ -575,21 +510,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removes_expired_results_and_empty_owner_directory() {
+    async fn deletes_selected_result_and_empty_owner_directory() {
         let directory = TestDirectory::new();
-        let service = service(&directory, Duration::from_millis(1));
+        let service = service(&directory);
         let credentials =
             LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
         let stored = service
             .create(&credentials, &[prepared_student()])
             .await
             .expect("результат должен сохраниться");
-        tokio::time::sleep(Duration::from_millis(10)).await;
-
         service
-            .cleanup_expired()
+            .delete(&stored.owner, &stored.filename)
             .await
-            .expect("очистка должна завершиться");
+            .expect("ручное удаление должно завершиться");
 
         assert!(!stored.path.exists());
         assert!(!directory.0.join("gadzhiev-mamedovar").exists());
@@ -600,5 +533,9 @@ mod tests {
                 .expect("список должен читаться")
                 .is_empty()
         );
+        assert!(matches!(
+            service.delete(&stored.owner, &stored.filename).await,
+            Err(AppError::NotFound)
+        ));
     }
 }
