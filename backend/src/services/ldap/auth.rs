@@ -198,7 +198,6 @@ impl LdapService {
         }
     }
 
-    // TODO: Проверить насколько фильтр по группе реально работает
     /// Собирает LDAP-фильтр, экранируя identifier и DN группы как значения фильтра.
     fn authorization_filter(&self, identifier: &str) -> String {
         let filter = format!(
@@ -212,7 +211,6 @@ impl LdapService {
             %filter,
             "LDAP authorization filter constructed"
         );
-        tracing::error!("TODO: Проверить насколько фильтр по группе реально работает");
         filter
     }
 
