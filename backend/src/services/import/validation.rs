@@ -7,14 +7,13 @@ use crate::{
 
 use super::credentials::generate_login;
 
-/// Проверяет ФИО, генерирует логины и отклоняет конфликты внутри файла.
+/// Проверяет ФИО, генерирует логины и отклоняет неизменяемые конфликты внутри файла.
 ///
 /// Проверка конфликтов в входной CSV.
 pub(super) fn validate_students(
     students: Vec<StudentInput>,
 ) -> Result<Vec<PreparedIdentity>, ImportError> {
     let mut full_names = HashSet::with_capacity(students.len());
-    let mut logins = HashSet::with_capacity(students.len());
     let mut prepared = Vec::with_capacity(students.len());
 
     for student in students {
@@ -31,13 +30,6 @@ pub(super) fn validate_students(
             return Err(ImportError::Collision {
                 row: student.source_row,
                 attribute: "cn".to_owned(),
-            });
-        }
-
-        if !logins.insert(login.clone()) {
-            return Err(ImportError::Collision {
-                row: student.source_row,
-                attribute: "sAMAccountName".to_owned(),
             });
         }
 
@@ -139,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_hyphens_apostrophes_email_and_group_unvalidated() {
+    fn removes_hyphens_and_apostrophes_from_login() {
         let mut valid = student(2, "Аслан-Джан", "Гаджиев-Мамедов'", "Рашидович");
         valid.email.clear();
         valid.group.clear();
@@ -147,7 +139,7 @@ mod tests {
         let prepared = validate_students(vec![valid])
             .expect("эти поля не должны отклоняться на текущем этапе");
 
-        assert_eq!(prepared[0].login, "gadzhiev-mamedov'ar");
+        assert_eq!(prepared[0].login, "gadzhievmamedovar");
         assert!(prepared[0].source.email.is_empty());
         assert!(prepared[0].source.group.is_empty());
     }

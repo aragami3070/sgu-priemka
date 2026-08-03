@@ -6,11 +6,7 @@ use crate::{
     errors::ImportError,
 };
 
-const FORBIDDEN_SAM_ACCOUNT_NAME_CHARACTERS: [char; 15] = [
-    '"', '/', '\\', '[', ']', ':', '|', '<', '>', '+', '=', ';', '?', ',', '*',
-];
-
-/// Формирует логин в нижнем регистре, транслитерируя фамилию и инициалы студента.
+/// Транслитерирует фамилию и инициалы, оставляя в логине только `[a-z]`.
 pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportError> {
     let get_first_char = |s: &str, err_message: String| {
         s.chars().next().ok_or(ImportError::Validation {
@@ -33,34 +29,39 @@ pub(super) fn generate_login(student: &StudentInput) -> Result<String, ImportErr
             get_first_char(student.first_name.trim(), "Имя пустое".to_string())?,
             get_first_char(student.patronymic.trim(), "Отчество пустое".to_string())?
         ))
-        .to_lowercase();
+        .chars()
+        .filter(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
 
-    validate_login(student.source_row, &login)?;
+    if login.is_empty() {
+        return Err(ImportError::Validation {
+            row: student.source_row,
+            message: "Логин пуст после транслитерации".to_owned(),
+        });
+    }
 
     Ok(login)
 }
 
-/// Проверяет ограничения Active Directory для пользовательского `sAMAccountName`.
-fn validate_login(source_row: usize, login: &str) -> Result<(), ImportError> {
-    let forbidden_character = login.chars().find(|character| {
-        character.is_control() || FORBIDDEN_SAM_ACCOUNT_NAME_CHARACTERS.contains(character)
-    });
-
-    if let Some(character) = forbidden_character {
+/// Нормализует введённую при LDAP-конфликте замену, разрешая только `[a-z0-9]`.
+pub(super) fn normalize_conflict_login(
+    source_row: usize,
+    login: &str,
+) -> Result<String, ImportError> {
+    let login = login.trim();
+    if login.is_empty()
+        || !login
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric())
+    {
         return Err(ImportError::Validation {
             row: source_row,
-            message: format!("Логин содержит запрещённый для sAMAccountName символ `{character}`"),
+            message: "Логин должен содержать только латинские буквы и цифры".to_owned(),
         });
     }
 
-    if login.ends_with('.') {
-        return Err(ImportError::Validation {
-            row: source_row,
-            message: "Логин не может заканчиваться точкой".to_owned(),
-        });
-    }
-
-    Ok(())
+    Ok(login.to_ascii_lowercase())
 }
 
 /// Вычисляет временный пароль из логина, серверной соли и UUID строки.
@@ -128,12 +129,12 @@ mod tests {
     }
 
     #[test]
-    fn preserves_hyphen_in_last_name() {
+    fn removes_hyphen_from_last_name() {
         let student = student("Иван", "Иванов-Петров", "Иванович");
 
         let login = generate_login(&student).expect("корректное ФИО должно дать логин");
 
-        assert_eq!(login, "ivanov-petrovii");
+        assert_eq!(login, "ivanovpetrovii");
     }
 
     #[test]
@@ -142,7 +143,16 @@ mod tests {
 
         let login = generate_login(&student).expect("корректное ФИО должно дать логин");
 
-        assert_eq!(login, "gadzhiev-mamedovar");
+        assert_eq!(login, "gadzhievmamedovar");
+    }
+
+    #[test]
+    fn removes_gost_backtick_from_belenkiy_login() {
+        let student = student("Алексей", "Беленький", "Владимирович");
+
+        let login = generate_login(&student).expect("корректное ФИО должно дать логин");
+
+        assert_eq!(login, "belenkijav");
     }
 
     #[test]
@@ -250,33 +260,39 @@ mod tests {
     }
 
     #[test]
-    fn returns_validation_error_for_forbidden_sam_account_name_character() {
-        let mut student = student("Иван", "Иванов/Петров", "Иванович");
-        student.source_row = 47;
+    fn removes_everything_except_latin_letters() {
+        let student = student("Иван", "Иванов / O'Петров_42", "Иванович");
 
-        let error = generate_login(&student)
-            .expect_err("запрещённый символ в логине должен вернуть ошибку");
+        let login = generate_login(&student).expect("лишние символы должны быть удалены");
 
-        assert!(matches!(
-            error,
-            ImportError::Validation { row: 47, message }
-                if message.contains("sAMAccountName") && message.contains('/')
-        ));
+        assert_eq!(login, "ivanovopetrovii");
+        assert!(
+            login
+                .chars()
+                .all(|character| character.is_ascii_lowercase())
+        );
     }
 
     #[test]
-    fn returns_validation_error_when_login_ends_with_period() {
-        let mut student = student("Иван", "Иванов", ".");
-        student.source_row = 53;
+    fn normalizes_conflict_login_to_lowercase() {
+        let login = normalize_conflict_login(53, "  NewLogin42  ")
+            .expect("латиница и цифры должны быть допустимы");
 
-        let error =
-            generate_login(&student).expect_err("точка в конце логина должна вернуть ошибку");
+        assert_eq!(login, "newlogin42");
+    }
 
-        assert!(matches!(
-            error,
-            ImportError::Validation { row: 53, message }
-                if message == "Логин не может заканчиваться точкой"
-        ));
+    #[test]
+    fn rejects_non_latin_characters_in_conflict_login() {
+        for invalid in ["", "   ", "новыйlogin1", "new-login", "new_login", "login!"] {
+            let error = normalize_conflict_login(59, invalid)
+                .expect_err("ручной логин с посторонними символами должен быть отклонён");
+
+            assert!(matches!(
+                error,
+                ImportError::Validation { row: 59, message }
+                    if message == "Логин должен содержать только латинские буквы и цифры"
+            ));
+        }
     }
 
     fn password(login: &str, uuid: &str, salt: &str) -> String {
