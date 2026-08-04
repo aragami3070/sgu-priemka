@@ -1,5 +1,10 @@
 use thiserror::Error;
 
+/// Номер группы, для которого в текущей инфраструктуре нет LDAP-отображения.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[error("unsupported group number: {0}")]
+pub(crate) struct UnsupportedGroupNumber(pub(crate) usize);
+
 /// Ошибки до или во время подготовки строк к добавлению в LDAP.
 #[derive(Clone, Debug, Error)]
 pub(crate) enum ImportError {
@@ -21,6 +26,15 @@ pub(crate) enum ImportError {
         row: usize,
         /// Понятное пользователю описание ошибки валидации.
         message: String,
+    },
+    /// Номер учебной группы не поддерживается текущим LDAP-отображением.
+    #[error("{source} at row {row}")]
+    UnsupportedGroup {
+        /// Номер исходной строки с единицы.
+        row: usize,
+        /// Неподдерживаемый числовой идентификатор направления.
+        #[source]
+        source: UnsupportedGroupNumber,
     },
     /// Сгенерированные данные конфликтуют с другой строкой или записью LDAP.
     #[error("identity collision at row {row}: {attribute}")]

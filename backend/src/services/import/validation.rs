@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    entities::import::{PreparedIdentity, StudentInput},
+    entities::import::{Group, PreparedIdentity, StudentInput},
     errors::ImportError,
 };
 
@@ -18,6 +18,18 @@ pub(super) fn validate_students(
 
     for student in students {
         let login = generate_login(&student)?;
+        let group_number = student
+            .group
+            .parse::<usize>()
+            .map_err(|_| ImportError::Validation {
+                row: student.source_row,
+                message: "Номер группы должен быть целым положительным числом".to_owned(),
+            })?;
+        let group =
+            Group::try_from(group_number).map_err(|source| ImportError::UnsupportedGroup {
+                row: student.source_row,
+                source,
+            })?;
 
         let full_name = format!(
             "{} {} {}",
@@ -36,6 +48,7 @@ pub(super) fn validate_students(
         prepared.push(PreparedIdentity {
             source: student,
             login,
+            group,
         });
     }
 
@@ -58,6 +71,8 @@ pub(super) fn find_login_collisions(identities: &[PreparedIdentity]) -> Vec<usiz
 
 #[cfg(test)]
 mod tests {
+    use crate::errors::UnsupportedGroupNumber;
+
     use super::*;
 
     fn student(
@@ -72,7 +87,7 @@ mod tests {
             last_name: last_name.to_owned(),
             patronymic: patronymic.to_owned(),
             email: format!("student{source_row}@example.com"),
-            group: "101".to_owned(),
+            group: "151".to_owned(),
         }
     }
 
@@ -89,8 +104,10 @@ mod tests {
         assert_eq!(prepared.len(), 2);
         assert_eq!(prepared[0].source, students[0]);
         assert_eq!(prepared[0].login, "ivanovii");
+        assert_eq!(prepared[0].group, Group::Pi);
         assert_eq!(prepared[1].source, students[1]);
         assert_eq!(prepared[1].login, "petrovpp");
+        assert_eq!(prepared[1].group, Group::Pi);
     }
 
     #[test]
@@ -146,13 +163,55 @@ mod tests {
     fn removes_hyphens_and_apostrophes_from_login() {
         let mut valid = student(2, "Аслан-Джан", "Гаджиев-Мамедов'", "Рашидович");
         valid.email.clear();
-        valid.group.clear();
 
         let prepared = validate_students(vec![valid])
-            .expect("эти поля не должны отклоняться на текущем этапе");
+            .expect("ФИО с разделителями и поддерживаемая группа должны пройти проверку");
 
         assert_eq!(prepared[0].login, "gadzhievmamedovar");
         assert!(prepared[0].source.email.is_empty());
-        assert!(prepared[0].source.group.is_empty());
+    }
+
+    #[test]
+    fn preserves_group_with_leading_zeroes_and_maps_its_numeric_value() {
+        let mut valid = student(4, "Иван", "Иванов", "Иванович");
+        valid.group = "00151".to_owned();
+
+        let prepared = validate_students(vec![valid])
+            .expect("ведущие нули не должны менять номер направления");
+
+        assert_eq!(prepared[0].source.group, "00151");
+        assert_eq!(prepared[0].group, Group::Pi);
+    }
+
+    #[test]
+    fn rejects_non_numeric_group_at_source_row() {
+        let mut invalid = student(27, "Иван", "Иванов", "Иванович");
+        invalid.group = "ПИ".to_owned();
+
+        let error = validate_students(vec![invalid])
+            .expect_err("текстовое название группы не должно приниматься");
+
+        assert!(matches!(
+            error,
+            ImportError::Validation { row: 27, message }
+                if message == "Номер группы должен быть целым положительным числом"
+        ));
+    }
+
+    #[test]
+    fn rejects_unsupported_group_at_source_row() {
+        let mut invalid = student(31, "Иван", "Иванов", "Иванович");
+        invalid.group = "101".to_owned();
+
+        let error = validate_students(vec![invalid])
+            .expect_err("неподдерживаемая группа должна вернуть отдельную ошибку");
+
+        assert!(matches!(
+            error,
+            ImportError::UnsupportedGroup {
+                row: 31,
+                source: UnsupportedGroupNumber(101)
+            }
+        ));
     }
 }

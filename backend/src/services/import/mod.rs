@@ -381,6 +381,9 @@ impl ImportService {
             ImportError::Validation { row, .. } => {
                 (JobStage::Validating, "csv_validation", Some(*row))
             }
+            ImportError::UnsupportedGroup { row, .. } => {
+                (JobStage::Validating, "unsupported_group", Some(*row))
+            }
             ImportError::Collision { row, .. } => {
                 (JobStage::Validating, "csv_collision", Some(*row))
             }
@@ -510,8 +513,8 @@ mod tests {
             .expect("владелец должен подписаться");
         let csv = concat!(
             "First,Last,Patronymic,Email,Group\n",
-            "Иван,Иванов,Иванович,ivan@example.com,001\n",
-            "Пётр,Петров,Петрович,petr@example.com,002\n",
+            "Иван,Иванов,Иванович,ivan@example.com,111\n",
+            "Пётр,Петров,Петрович,petr@example.com,121\n",
         );
 
         let status = service
@@ -556,10 +559,10 @@ mod tests {
             .expect("владелец должен подписаться");
         let csv = concat!(
             "First,Last,Patronymic,Email,Group\n",
-            "Иван,Иванов,Иванович,ivan@example.com,001\n",
-            "Игорь,Иванов,Ильич,igor@example.com,002\n",
-            "Пётр,Петров,Петрович,petr@example.com,003\n",
-            "Павел,Петров,Петрович,pavel@example.com,004\n",
+            "Иван,Иванов,Иванович,ivan@example.com,111\n",
+            "Игорь,Иванов,Ильич,igor@example.com,121\n",
+            "Пётр,Петров,Петрович,petr@example.com,131\n",
+            "Павел,Петров,Петрович,pavel@example.com,141\n",
         );
 
         let pipeline =

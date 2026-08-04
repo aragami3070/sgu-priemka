@@ -380,7 +380,7 @@ mod tests {
 
     use crate::{
         config::{LdapConfig, ResultConfig},
-        entities::import::{PreparedIdentity, SecretString, StudentInput},
+        entities::import::{Group, PreparedIdentity, SecretString, StudentInput},
     };
 
     use super::*;
@@ -438,6 +438,7 @@ mod tests {
                     group: "001".to_owned(),
                 },
                 login: "ivanovii".to_owned(),
+                group: Group::Pi,
             },
             password: SecretString::new("secret".to_owned()),
         }
