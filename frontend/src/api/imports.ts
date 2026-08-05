@@ -9,6 +9,7 @@ export type JobStage =
   | 'checking_ldap'
   | 'generating_passwords'
   | 'creating_accounts'
+  | 'deleting_accounts'
   | 'saving_result'
 
 export interface ResultReference {
@@ -42,6 +43,12 @@ export type JobStatus =
   | {
       type: 'completed'
       created: number
+      total: number
+      result: ResultReference
+    }
+  | {
+      type: 'deleted'
+      deleted: number
       total: number
       result: ResultReference
     }

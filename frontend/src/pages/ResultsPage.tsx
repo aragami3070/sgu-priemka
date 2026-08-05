@@ -33,6 +33,7 @@ import {
 } from "@mui/material";
 import {
   createAccountsFromResult,
+  deleteAccountsFromResult,
   deleteResult,
   downloadResult,
   getResultErrorMessage,
@@ -73,10 +74,17 @@ export function ResultsPage() {
   const [deleteCandidate, setDeleteCandidate] = useState<ResultItem | null>(
     null,
   );
+  const [deleteAccountsCandidate, setDeleteAccountsCandidate] =
+    useState<ResultItem | null>(null);
   const [creatingKey, setCreatingKey] = useState<string | null>(null);
+  const [deletingAccountsKey, setDeletingAccountsKey] = useState<string | null>(
+    null,
+  );
   const [creationStatus, setCreationStatus] = useState<JobStatus | null>(null);
   const [creationSuccess, setCreationSuccess] = useState<string | null>(null);
+  const [deletionSuccess, setDeletionSuccess] = useState<string | null>(null);
   const creationSocketRef = useRef<WebSocket | null>(null);
+  const deletionSocketRef = useRef<WebSocket | null>(null);
 
   const loadResults = useCallback(async () => {
     setIsLoading(true);
@@ -103,6 +111,8 @@ export function ResultsPage() {
     return () => {
       creationSocketRef.current?.close();
       creationSocketRef.current = null;
+      deletionSocketRef.current?.close();
+      deletionSocketRef.current = null;
     };
   }, []);
 
@@ -165,7 +175,9 @@ export function ResultsPage() {
     setCreationStatus(null);
     setCreationSuccess(null);
     setError(null);
-    creationSocketRef.current?.close();
+    const previousCreationSocket = creationSocketRef.current;
+    creationSocketRef.current = null;
+    previousCreationSocket?.close();
     try {
       const { job_id: jobId } = await createAccountsFromResult(result);
       const socket = openImportEvents(jobId);
@@ -203,17 +215,25 @@ export function ResultsPage() {
           }
         } catch {
           setError("Backend прислал некорректный статус задания.");
+          terminalReceived = true;
           socket.close();
         }
       };
-      socket.onclose = () => {
-        if (!terminalReceived) {
-          setError("Связь с задачей создания пользователей потеряна.");
+      socket.onclose = (event) => {
+        // Backend отправляет терминальный статус и сразу после него Close.
+        // Откладываем проверку на следующий tick, чтобы последний message
+        // успел обработаться даже если браузер доставит close-событие первым.
+        window.setTimeout(() => {
+          if (creationSocketRef.current !== socket) return;
+          if (!terminalReceived && event.code !== 1000) {
+            setError("Связь с задачей создания пользователей потеряна.");
+          }
+          if (!terminalReceived && event.code === 1000) {
+            setCreationSuccess("Пользователи успешно созданы.");
+          }
           setCreatingKey(null);
-        }
-        if (creationSocketRef.current === socket) {
           creationSocketRef.current = null;
-        }
+        }, 0);
       };
     } catch (requestError) {
       setError(
@@ -223,6 +243,81 @@ export function ResultsPage() {
         ),
       );
       setCreatingKey(null);
+    }
+  };
+
+  const handleDeleteAccounts = async () => {
+    if (!deleteAccountsCandidate || creatingKey || deletingAccountsKey) return;
+    const candidate = deleteAccountsCandidate;
+    const key = resultKey(candidate);
+    setDeletingAccountsKey(key);
+    setDeletionSuccess(null);
+    setError(null);
+    setDeleteAccountsCandidate(null);
+    const previousDeletionSocket = deletionSocketRef.current;
+    deletionSocketRef.current = null;
+    previousDeletionSocket?.close();
+    try {
+      const { job_id: jobId } = await deleteAccountsFromResult(candidate);
+      const socket = openImportEvents(jobId);
+      deletionSocketRef.current = socket;
+      let terminalReceived = false;
+      socket.onmessage = (event) => {
+        try {
+          const nextStatus = JSON.parse(String(event.data)) as JobStatus;
+          if (
+            nextStatus.type === "deleted" ||
+            // Совместимость с backend, собранным до появления отдельного
+            // статуса `deleted`: старый сервер возвращал `completed`.
+            nextStatus.type === "completed"
+          ) {
+            terminalReceived = true;
+            setDeletingAccountsKey(null);
+            const count =
+              nextStatus.type === "deleted"
+                ? nextStatus.deleted
+                : nextStatus.created;
+            setDeletionSuccess(
+              `Пользователи успешно удалены: ${count} ${
+                count === 1
+                  ? "учётная запись"
+                  : count >= 2 && count <= 4
+                    ? "учётные записи"
+                    : "учётных записей"
+              }.`,
+            );
+          } else if (nextStatus.type === "failed") {
+            terminalReceived = true;
+            setDeletingAccountsKey(null);
+            setError(nextStatus.message);
+          } else if (nextStatus.type === "partial_failure") {
+            terminalReceived = true;
+            setDeletingAccountsKey(null);
+            setError(
+              `Удаление остановлено на строке ${nextStatus.failed_row}.`,
+            );
+          }
+        } catch {
+          setError("Backend прислал некорректный статус задания удаления.");
+          socket.close();
+        }
+      };
+      socket.onclose = () => {
+        if (deletionSocketRef.current !== socket) return;
+        if (!terminalReceived) {
+          setError("Связь с задачей удаления пользователей потеряна.");
+          setDeletingAccountsKey(null);
+        }
+        deletionSocketRef.current = null;
+      };
+    } catch (requestError) {
+      setError(
+        getResultErrorMessage(
+          requestError,
+          "Не удалось запустить удаление пользователей.",
+        ),
+      );
+      setDeletingAccountsKey(null);
     }
   };
 
@@ -335,6 +430,7 @@ export function ResultsPage() {
                 const isDownloading = downloadingKey === key;
                 const isDeleting = deletingKey === key;
                 const isCreating = creatingKey === key;
+                const isDeletingAccounts = deletingAccountsKey === key;
                 return (
                   <TableRow key={key} hover>
                     <TableCell>{result.owner}</TableCell>
@@ -365,7 +461,12 @@ export function ResultsPage() {
                             <IconButton
                               color="primary"
                               aria-label={`Создать пользователей из ${result.filename}`}
-                              disabled={isDownloading || isDeleting || creatingKey !== null}
+                              disabled={
+                                isDownloading ||
+                                isDeleting ||
+                                creatingKey !== null ||
+                                deletingAccountsKey !== null
+                              }
                               onClick={() => void handleCreateAccounts(result)}
                             >
                               {isCreating ? (
@@ -376,14 +477,26 @@ export function ResultsPage() {
                             </IconButton>
                           </span>
                         </Tooltip>
-                        <Tooltip title="Удалить пользователей (скоро)">
+                        <Tooltip title="Удалить пользователей из LDAP">
                           <span>
                             <IconButton
                               color="warning"
                               aria-label={`Удалить пользователей из ${result.filename}`}
-                              disabled
+                              disabled={
+                                isDownloading ||
+                                isDeleting ||
+                                creatingKey !== null ||
+                                deletingAccountsKey !== null
+                              }
+                              onClick={() =>
+                                setDeleteAccountsCandidate(result)
+                              }
                             >
-                              <UserX size={19} />
+                              {isDeletingAccounts ? (
+                                <CircularProgress size={19} />
+                              ) : (
+                                <UserX size={19} />
+                              )}
                             </IconButton>
                           </span>
                         </Tooltip>
@@ -450,6 +563,38 @@ export function ResultsPage() {
         </DialogActions>
       </Dialog>
 
+      <Dialog
+        open={deleteAccountsCandidate !== null}
+        onClose={() => {
+          if (!deletingAccountsKey) setDeleteAccountsCandidate(null);
+        }}
+      >
+        <DialogTitle>Удалить пользователей из LDAP?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            Все пользователи из файла {deleteAccountsCandidate?.filename} будут
+            удалены из LDAP. Это действие нельзя отменить.
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            color="inherit"
+            disabled={deletingAccountsKey !== null}
+            onClick={() => setDeleteAccountsCandidate(null)}
+          >
+            Отмена
+          </Button>
+          <Button
+            color="warning"
+            variant="contained"
+            disabled={deletingAccountsKey !== null}
+            onClick={() => void handleDeleteAccounts()}
+          >
+            Удалить пользователей
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <Snackbar
         open={creationSuccess !== null}
         autoHideDuration={6000}
@@ -462,6 +607,21 @@ export function ResultsPage() {
           onClose={() => setCreationSuccess(null)}
         >
           {creationSuccess}
+        </Alert>
+      </Snackbar>
+
+      <Snackbar
+        open={deletionSuccess !== null}
+        autoHideDuration={6000}
+        onClose={() => setDeletionSuccess(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setDeletionSuccess(null)}
+        >
+          {deletionSuccess}
         </Alert>
       </Snackbar>
     </Box>

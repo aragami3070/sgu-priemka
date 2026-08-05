@@ -52,6 +52,15 @@ export async function createAccountsFromResult(
   return response.data
 }
 
+export async function deleteAccountsFromResult(
+  result: ResultItem,
+): Promise<CreateAccountsResponse> {
+  const response = await apiClient.post<CreateAccountsResponse>(
+    `${resultPath(result)}/delete-accounts`,
+  )
+  return response.data
+}
+
 export function getResultErrorMessage(
   error: unknown,
   fallback: string,

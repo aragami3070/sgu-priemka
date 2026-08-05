@@ -35,6 +35,7 @@ const stageLabels: Record<JobStage, string> = {
   checking_ldap: "Проверка LDAP",
   generating_passwords: "Генерация паролей",
   creating_accounts: "Создание учётных записей",
+  deleting_accounts: "Удаление учётных записей",
   saving_result: "Сохранение результата",
 };
 
@@ -65,6 +66,10 @@ export function ImportPage() {
         setStatus(nextStatus);
 
         if (nextStatus.type === "completed") {
+          terminalReceived = true;
+          setActiveJobId(null);
+          setIsProcessing(false);
+        } else if (nextStatus.type === "deleted") {
           terminalReceived = true;
           setActiveJobId(null);
           setIsProcessing(false);
@@ -222,6 +227,12 @@ export function ImportPage() {
               <AlertTitle>CSV успешно подготовлен</AlertTitle>
               Обработано строк: {status.total}. Результат: {status.result.owner}
               /{status.result.filename}
+            </Alert>
+          )}
+          {status?.type === "deleted" && (
+            <Alert severity="success" className="import-message">
+              <AlertTitle>Пользователи успешно удалены</AlertTitle>
+              Удалено учётных записей: {status.deleted}.
             </Alert>
           )}
           {conflictStatus && (
