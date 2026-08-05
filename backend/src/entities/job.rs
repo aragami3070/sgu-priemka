@@ -27,6 +27,15 @@ pub(crate) enum JobStatus {
         /// Сформированный CSV с готовыми учётными данными.
         result: ResultReference,
     },
+    /// Все учётные записи из выбранного CSV успешно удалены из LDAP.
+    Deleted {
+        /// Количество удалённых учётных записей LDAP.
+        deleted: usize,
+        /// Общее количество записей в выбранном CSV.
+        total: usize,
+        /// CSV, использованный как источник операции.
+        result: ResultReference,
+    },
     /// Обработка остановлена до появления частичного результата записи в LDAP.
     Failed {
         /// Этап, на котором произошла ошибка.
@@ -99,7 +108,10 @@ impl JobStatus {
     pub(crate) fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Completed { .. } | Self::Failed { .. } | Self::PartialFailure { .. }
+            Self::Completed { .. }
+                | Self::Deleted { .. }
+                | Self::Failed { .. }
+                | Self::PartialFailure { .. }
         )
     }
 }
@@ -122,6 +134,8 @@ pub(crate) enum JobStage {
     GeneratingPasswords,
     /// Запись подготовленных учётных записей студентов в LDAP.
     CreatingAccounts,
+    /// Удаление учётных записей студентов из LDAP.
+    DeletingAccounts,
     /// Атомарное сохранение итогового CSV.
     SavingResult,
 }

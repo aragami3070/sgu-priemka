@@ -30,6 +30,10 @@ pub(super) fn routes() -> Router<AppState> {
             "/results/{owner}/{filename}/create-accounts",
             post(create_accounts),
         )
+        .route(
+            "/results/{owner}/{filename}/delete-accounts",
+            post(delete_accounts),
+        )
 }
 
 /// Метаданные одного сформированного CSV для истории результатов.
@@ -52,9 +56,9 @@ struct ResultListResponse {
     items: Vec<ResultItem>,
 }
 
-/// Идентификатор задачи создания LDAP-аккаунтов из готового результата.
+/// Идентификатор задачи изменения LDAP-аккаунтов из готового результата.
 #[derive(Debug, Serialize)]
-struct CreateAccountsResponse {
+struct AccountOperationResponse {
     /// Идентификатор задачи для подписки на существующий import WebSocket.
     job_id: String,
 }
@@ -119,7 +123,7 @@ async fn create_accounts(
     State(state): State<AppState>,
     user: AuthenticatedUser,
     Path((owner, filename)): Path<(String, String)>,
-) -> Result<(StatusCode, Json<CreateAccountsResponse>), AppError> {
+) -> Result<(StatusCode, Json<AccountOperationResponse>), AppError> {
     // Проверяем существование результата до создания job, чтобы не запускать
     // задачу, которая сразу завершится с NotFound.
     state.results.read(&owner, &filename).await?;
@@ -156,6 +160,54 @@ async fn create_accounts(
     tracing::info!(%job_id, %owner, %filename, "LDAP creation from stored result accepted");
     Ok((
         StatusCode::ACCEPTED,
-        Json(CreateAccountsResponse { job_id }),
+        Json(AccountOperationResponse { job_id }),
+    ))
+}
+
+/// Запускает удаление LDAP-аккаунтов из уже сохранённого CSV-результата.
+async fn delete_accounts(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path((owner, filename)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<AccountOperationResponse>), AppError> {
+    state.results.read(&owner, &filename).await?;
+    let job_id = state
+        .jobs
+        .create(
+            user.username.clone(),
+            JobStatus::Progress {
+                stage: JobStage::Parsing,
+                current: 0,
+                total: 0,
+            },
+        )
+        .await?;
+    let context = ImportContext {
+        job_id: job_id.clone(),
+        username: user.username,
+        kerberos_credentials: user.kerberos_credentials,
+        original_filename: filename.clone(),
+    };
+    let imports = state.imports.clone();
+    let job_id_for_task = job_id.clone();
+    let filename_for_task = filename.clone();
+    let result_owner = owner.clone();
+    tokio::spawn(async move {
+        if let Err(error) = imports
+            .run_result_deletion(context, result_owner, filename_for_task)
+            .await
+        {
+            tracing::error!(
+                job_id = %job_id_for_task,
+                %error,
+                "stored-result LDAP deletion stopped unexpectedly"
+            );
+        }
+    });
+
+    tracing::info!(%job_id, %owner, %filename, "LDAP deletion from stored result accepted");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AccountOperationResponse { job_id }),
     ))
 }

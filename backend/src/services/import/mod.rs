@@ -218,6 +218,40 @@ impl ImportService {
         .await
     }
 
+    /// Запускает LDAP-удаление студентов из уже сохранённого итогового CSV.
+    pub(crate) async fn run_result_deletion(
+        &self,
+        context: ImportContext,
+        result_owner: String,
+        result_filename: String,
+    ) -> Result<JobStatus, AppError> {
+        tracing::info!(
+            job_id = %context.job_id,
+            result_owner = %result_owner,
+            result_filename = %result_filename,
+            "LDAP deletion from stored result started"
+        );
+        let students = match self
+            .load_result_students(&context, &result_owner, &result_filename)
+            .await?
+        {
+            PipelineStage::Continue(students) => students,
+            PipelineStage::Finished(status) => return Ok(status),
+        };
+        let total = students.len();
+        let _ldap_lock = self.lock.acquire().await.map_err(|_| AppError::Internal)?;
+        self.delete_accounts(
+            &context,
+            &students,
+            total,
+            ResultReference {
+                owner: result_owner,
+                filename: result_filename,
+            },
+        )
+        .await
+    }
+
     /// Загружает и разбирает сохранённый CSV перед LDAP-созданием.
     async fn load_result_students(
         &self,
@@ -314,6 +348,62 @@ impl ImportService {
             username = %context.username,
             created_students = students.len(),
             "LDAP creation from stored result completed"
+        );
+        Ok(status)
+    }
+
+    /// Последовательно удаляет студентов из LDAP и публикует прогресс операции.
+    async fn delete_accounts(
+        &self,
+        context: &ImportContext,
+        students: &[PreparedStudent],
+        total: usize,
+        result: ResultReference,
+    ) -> Result<JobStatus, AppError> {
+        self.publish_progress(&context.job_id, JobStage::DeletingAccounts, 0, total)
+            .await?;
+        for (index, student) in students.iter().enumerate() {
+            if let Err(error) = self
+                .ldap
+                .delete_user(&context.kerberos_credentials, student)
+                .await
+            {
+                let status = JobStatus::Failed {
+                    stage: JobStage::DeletingAccounts,
+                    code: "ldap_delete_failed".to_owned(),
+                    message: "Не удалось удалить пользователя из LDAP.".to_owned(),
+                    row: Some(student.identity.source.source_row),
+                };
+                tracing::warn!(
+                    job_id = %context.job_id,
+                    row = student.identity.source.source_row,
+                    login = %student.identity.login,
+                    error = ?error,
+                    "LDAP account deletion stopped after partial progress"
+                );
+                self.jobs.publish(&context.job_id, status.clone()).await?;
+                return Ok(status);
+            }
+            self.publish_progress(
+                &context.job_id,
+                JobStage::DeletingAccounts,
+                index + 1,
+                total,
+            )
+            .await?;
+        }
+
+        let status = JobStatus::Deleted {
+            deleted: students.len(),
+            total,
+            result,
+        };
+        self.jobs.publish(&context.job_id, status.clone()).await?;
+        tracing::info!(
+            job_id = %context.job_id,
+            username = %context.username,
+            deleted_students = students.len(),
+            "LDAP deletion from stored result completed"
         );
         Ok(status)
     }

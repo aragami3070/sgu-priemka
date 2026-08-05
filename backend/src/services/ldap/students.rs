@@ -198,6 +198,41 @@ impl LdapService {
         Ok(())
     }
 
+    /// Удаляет одну учётную запись студента из LDAP.
+    ///
+    /// DN восстанавливается из ФИО и настроенного контейнера пользователей,
+    /// поэтому credentials текущей сессии используются только для подключения
+    /// и выполнения операции от имени вошедшего администратора.
+    pub(crate) async fn delete_user(
+        &self,
+        credentials: &KerberosCredentials,
+        student: &PreparedStudent,
+    ) -> Result<(), LdapError> {
+        let (user_dn, _, _) = self.student_dns(student)?;
+        let mut ldap = self.connect().await?;
+        self.authenticate_connection(&mut ldap, credentials).await?;
+
+        tracing::info!(
+            identifier = credentials.identifier(),
+            login = %student.identity.login,
+            user_dn = %user_dn,
+            "deleting LDAP student account"
+        );
+        let result = ldap
+            .delete(&user_dn)
+            .await
+            .map_err(|error| Self::operation_error(LdapPhase::DeleteObject, false, error))?;
+        Self::check_operation(result, LdapPhase::DeleteObject, false)?;
+
+        tracing::info!(
+            identifier = credentials.identifier(),
+            login = %student.identity.login,
+            user_dn = %user_dn,
+            "LDAP student account deleted"
+        );
+        Ok(())
+    }
+
     /// Формирует DN пользователя и учебной группы для текущего года.
     fn student_dns(
         &self,
