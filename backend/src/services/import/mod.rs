@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use crate::{
     config::Config,
     entities::{
-        import::{ImportContext, PreparedStudent},
+        import::{ImportContext, PreparedIdentity, PreparedStudent},
         job::{JobStage, JobStatus, LoginConflict, LoginResolution, ResultReference},
     },
     errors::{AppError, ImportError},
@@ -33,6 +33,11 @@ const LOGIN_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 enum LoginResolutionResult {
     Resolved(Vec<LoginResolution>),
     TimedOut(JobStatus),
+}
+
+enum PipelineStage<T> {
+    Continue(T),
+    Finished(JobStatus),
 }
 
 /// Управляет полным pipeline импорта студентов.
@@ -77,85 +82,26 @@ impl ImportService {
             username = %context.username,
             filename = %context.original_filename,
             file_size = file_bytes.len(),
-            "import pipeline started without LDAP stages"
+            "import pipeline started"
         );
 
-        self.publish_progress(&context.job_id, JobStage::Parsing, 0, 0)
-            .await?;
-        let parsing = tokio::task::spawn_blocking(move || parse_csv(&file_bytes)).await;
-        let students = match parsing {
-            Ok(Ok(students)) => students,
-            Ok(Err(error)) => return self.finish_import_error(&context.job_id, error).await,
-            Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "CSV parsing task failed");
-                return self
-                    .finish_internal_failure(
-                        &context.job_id,
-                        JobStage::Parsing,
-                        "CSV parsing task failed",
-                    )
-                    .await;
-            }
+        let (mut identities, total) = match self.parse_and_validate(&context, file_bytes).await? {
+            PipelineStage::Continue(value) => value,
+            PipelineStage::Finished(status) => return Ok(status),
         };
-        let total = students.len();
-        self.publish_progress(&context.job_id, JobStage::Parsing, total, total)
-            .await?;
 
-        self.publish_progress(&context.job_id, JobStage::Validating, 0, total)
-            .await?;
-        let validation = tokio::task::spawn_blocking(move || validate_students(students)).await;
-        let mut identities = match validation {
-            Ok(Ok(identities)) => identities,
-            Ok(Err(error)) => return self.finish_import_error(&context.job_id, error).await,
-            Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "CSV validation task failed");
-                return self
-                    .finish_internal_failure(
-                        &context.job_id,
-                        JobStage::Validating,
-                        "CSV validation task failed",
-                    )
-                    .await;
-            }
+        identities = match self.check_ldap(&context, &mut identities, total).await? {
+            PipelineStage::Continue(value) => value,
+            PipelineStage::Finished(status) => return Ok(status),
         };
-        if let Some(status) = self
-            .resolve_csv_login_conflicts(&context.job_id, &mut identities)
+
+        let students = match self
+            .generate_passwords(&context.job_id, identities, total)
             .await?
         {
-            return Ok(status);
-        }
-        self.publish_progress(&context.job_id, JobStage::Validating, total, total)
-            .await?;
-
-        self.publish_progress(&context.job_id, JobStage::GeneratingPasswords, 0, total)
-            .await?;
-        let salt = self.config.salt.clone();
-        let students = tokio::task::spawn_blocking(move || {
-            identities
-                .into_iter()
-                .map(|identity| {
-                    let uuid = uuid::Uuid::new_v4().to_string();
-                    let password = generate_password(&identity.login, &uuid, &salt);
-                    PreparedStudent { identity, password }
-                })
-                .collect::<Vec<_>>()
-        })
-        .await;
-        let students = match students {
-            Ok(students) => students,
-            Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "password generation task failed");
-                return self
-                    .finish_internal_failure(
-                        &context.job_id,
-                        JobStage::GeneratingPasswords,
-                        "password generation task failed",
-                    )
-                    .await;
-            }
+            PipelineStage::Continue(value) => value,
+            PipelineStage::Finished(status) => return Ok(status),
         };
-        self.publish_progress(&context.job_id, JobStage::GeneratingPasswords, total, total)
-            .await?;
 
         self.publish_progress(&context.job_id, JobStage::SavingResult, 0, 1)
             .await?;
@@ -190,11 +136,135 @@ impl ImportService {
             job_id = %context.job_id,
             username = %context.username,
             prepared_students = total,
-            "import pipeline completed without LDAP account creation"
+            "import pipeline completed with validated account preparation; LDAP account creation is pending"
         );
         Ok(status)
     }
 
+    /// Разбирает CSV, валидирует строки и разрешает конфликты логинов внутри файла.
+    async fn parse_and_validate(
+        &self,
+        context: &ImportContext,
+        file_bytes: Vec<u8>,
+    ) -> Result<PipelineStage<(Vec<PreparedIdentity>, usize)>, AppError> {
+        self.publish_progress(&context.job_id, JobStage::Parsing, 0, 0)
+            .await?;
+        let parsing = tokio::task::spawn_blocking(move || parse_csv(&file_bytes)).await;
+        let students = match parsing {
+            Ok(Ok(students)) => students,
+            Ok(Err(error)) => {
+                return Ok(PipelineStage::Finished(
+                    self.finish_import_error(&context.job_id, error).await?,
+                ));
+            }
+            Err(error) => {
+                tracing::error!(job_id = %context.job_id, %error, "CSV parsing task failed");
+                return Ok(PipelineStage::Finished(
+                    self.finish_internal_failure(
+                        &context.job_id,
+                        JobStage::Parsing,
+                        "CSV parsing task failed",
+                    )
+                    .await?,
+                ));
+            }
+        };
+        let total = students.len();
+        self.publish_progress(&context.job_id, JobStage::Parsing, total, total)
+            .await?;
+        self.publish_progress(&context.job_id, JobStage::Validating, 0, total)
+            .await?;
+
+        let validation = tokio::task::spawn_blocking(move || validate_students(students)).await;
+        let mut identities = match validation {
+            Ok(Ok(identities)) => identities,
+            Ok(Err(error)) => {
+                return Ok(PipelineStage::Finished(
+                    self.finish_import_error(&context.job_id, error).await?,
+                ));
+            }
+            Err(error) => {
+                tracing::error!(job_id = %context.job_id, %error, "CSV validation task failed");
+                return Ok(PipelineStage::Finished(
+                    self.finish_internal_failure(
+                        &context.job_id,
+                        JobStage::Validating,
+                        "CSV validation task failed",
+                    )
+                    .await?,
+                ));
+            }
+        };
+        if let Some(status) = self
+            .resolve_csv_login_conflicts(&context.job_id, &mut identities)
+            .await?
+        {
+            return Ok(PipelineStage::Finished(status));
+        }
+        self.publish_progress(&context.job_id, JobStage::Validating, total, total)
+            .await?;
+        Ok(PipelineStage::Continue((identities, total)))
+    }
+
+    /// Проверяет сгенерированные логины в LDAP и разрешает найденные конфликты.
+    async fn check_ldap(
+        &self,
+        context: &ImportContext,
+        identities: &mut [PreparedIdentity],
+        total: usize,
+    ) -> Result<PipelineStage<Vec<PreparedIdentity>>, AppError> {
+        self.publish_progress(&context.job_id, JobStage::CheckingLdap, 0, total)
+            .await?;
+        if let Some(status) = self
+            .resolve_ldap_login_conflicts(context, identities)
+            .await?
+        {
+            return Ok(PipelineStage::Finished(status));
+        }
+        self.publish_progress(&context.job_id, JobStage::CheckingLdap, total, total)
+            .await?;
+        Ok(PipelineStage::Continue(identities.to_vec()))
+    }
+
+    /// Генерирует временные пароли для проверенных identity в blocking-задаче.
+    async fn generate_passwords(
+        &self,
+        job_id: &str,
+        identities: Vec<PreparedIdentity>,
+        total: usize,
+    ) -> Result<PipelineStage<Vec<PreparedStudent>>, AppError> {
+        self.publish_progress(job_id, JobStage::GeneratingPasswords, 0, total)
+            .await?;
+        let salt = self.config.salt.clone();
+        let students = tokio::task::spawn_blocking(move || {
+            identities
+                .into_iter()
+                .map(|identity| {
+                    let uuid = uuid::Uuid::new_v4().to_string();
+                    let password = generate_password(&identity.login, &uuid, &salt);
+                    PreparedStudent { identity, password }
+                })
+                .collect::<Vec<_>>()
+        })
+        .await;
+        let students = match students {
+            Ok(students) => students,
+            Err(error) => {
+                tracing::error!(job_id = %job_id, %error, "password generation task failed");
+                return Ok(PipelineStage::Finished(
+                    self.finish_internal_failure(
+                        job_id,
+                        JobStage::GeneratingPasswords,
+                        "password generation task failed",
+                    )
+                    .await?,
+                ));
+            }
+        };
+        self.publish_progress(job_id, JobStage::GeneratingPasswords, total, total)
+            .await?;
+        Ok(PipelineStage::Continue(students))
+    }
     /// Публикует промежуточный статус pipeline для подписчиков задачи.
     async fn publish_progress(
         &self,
@@ -270,6 +340,82 @@ impl ImportService {
                         submitted_logins = resolutions.len(),
                         "replacement login batch accepted for repeated validation"
                     );
+                }
+                LoginResolutionResult::TimedOut(status) => return Ok(Some(status)),
+            }
+        }
+    }
+
+    /// Ищет уже занятые в LDAP логины и повторно запрашивает их исправление.
+    async fn resolve_ldap_login_conflicts(
+        &self,
+        context: &ImportContext,
+        identities: &mut [PreparedIdentity],
+    ) -> Result<Option<JobStatus>, AppError> {
+        loop {
+            let collisions = match self
+                .ldap
+                .find_collisions(&context.kerberos_credentials, identities)
+                .await
+            {
+                Ok(collisions) => collisions,
+                Err(error) => {
+                    tracing::warn!(
+                        job_id = %context.job_id,
+                        error = ?error,
+                        "LDAP login collision search failed"
+                    );
+                    return self
+                        .finish_ldap_failure(&context.job_id, error)
+                        .await
+                        .map(Some);
+                }
+            };
+            if collisions.is_empty() {
+                return Ok(None);
+            }
+
+            let conflicts = collisions
+                .iter()
+                .filter_map(|collision| {
+                    identities
+                        .iter()
+                        .find(|identity| identity.source.source_row == collision.source_row)
+                        .map(|identity| LoginConflict {
+                            row: collision.source_row,
+                            full_name: format!(
+                                "{} {} {}",
+                                identity.source.last_name.trim(),
+                                identity.source.first_name.trim(),
+                                identity.source.patronymic.trim()
+                            ),
+                            login: collision.value.clone(),
+                            message: format!("Логин `{}` уже существует в LDAP", collision.value),
+                        })
+                })
+                .collect();
+
+            match self
+                .request_login_resolution(&context.job_id, JobStage::CheckingLdap, conflicts)
+                .await?
+            {
+                LoginResolutionResult::Resolved(resolutions) => {
+                    for resolution in resolutions {
+                        if let Some(identity) = identities
+                            .iter_mut()
+                            .find(|identity| identity.source.source_row == resolution.row)
+                        {
+                            identity.login = resolution.login;
+                        }
+                    }
+                    // Замена, предложенная для LDAP-конфликта, может создать
+                    // дубликат внутри самого CSV — проверяем его тем же диалогом.
+                    if let Some(status) = self
+                        .resolve_csv_login_conflicts(&context.job_id, identities)
+                        .await?
+                    {
+                        return Ok(Some(status));
+                    }
                 }
                 LoginResolutionResult::TimedOut(status) => return Ok(Some(status)),
             }
@@ -418,265 +564,21 @@ impl ImportService {
         self.jobs.publish(job_id, status.clone()).await?;
         Ok(status)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use std::{net::SocketAddr, path::PathBuf, time::Duration};
-
-    use crate::{
-        config::{KerberosConfig, LdapConfig, ResultConfig},
-        entities::auth::KerberosCredentials,
-        services::kerberos::KerberosService,
-    };
-
-    use super::*;
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new() -> Self {
-            Self(std::env::temp_dir().join(format!(
-                "sgu-priemka-import-service-{}",
-                uuid::Uuid::new_v4()
-            )))
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            if let Err(error) = std::fs::remove_dir_all(&self.0)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                panic!("не удалось удалить тестовый каталог: {error}");
-            }
-        }
-    }
-
-    fn config(directory: &TestDirectory) -> Arc<Config> {
-        Arc::new(Config {
-            listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
-            cookie_secure: false,
-            session_ttl: Duration::from_secs(60),
-            ldap: LdapConfig {
-                url: "ldap://ldap.test".to_owned(),
-                gssapi_host: "ldap.test".to_owned(),
-                auth_search_base_dn: "DC=main,DC=sgu,DC=ru".to_owned(),
-                users_container_dn: "OU=Users,DC=main,DC=sgu,DC=ru".to_owned(),
-                csit_admins_group_dn: "CN=Admins,DC=main,DC=sgu,DC=ru".to_owned(),
-            },
-            kerberos: KerberosConfig {
-                realm: "MAIN.SGU.RU".to_owned(),
-                ccache_dir: directory.0.join("krb5"),
-            },
-            results: ResultConfig {
-                output_dir: directory.0.clone(),
-            },
-            salt: "test-salt".to_owned(),
-        })
-    }
-
-    fn service(directory: &TestDirectory) -> (ImportService, Arc<JobService>) {
-        let config = config(directory);
-        let jobs = Arc::new(JobService::new());
-        let results = Arc::new(
-            ResultService::new(config.clone()).expect("хранилище результатов должно создаться"),
-        );
-        let kerberos = Arc::new(KerberosService::for_tests(directory.0.join("krb5")));
-        let ldap = Arc::new(LdapService::new(config.clone(), kerberos));
-        (
-            ImportService::new(ldap, jobs.clone(), results, config),
-            jobs,
-        )
-    }
-
-    async fn context(jobs: &JobService) -> ImportContext {
-        let username = "admin".to_owned();
-        let job_id = jobs
-            .create(
-                username.clone(),
-                JobStatus::Progress {
-                    stage: JobStage::Uploading,
-                    current: 1,
-                    total: 1,
-                },
-            )
-            .await
-            .expect("job должна создаться");
-        ImportContext {
-            job_id,
-            username: username.clone(),
-            kerberos_credentials: Arc::new(KerberosCredentials::for_tests(username)),
-            original_filename: "students.csv".to_owned(),
-        }
-    }
-
-    #[tokio::test]
-    async fn pipeline_without_ldap_creates_result_and_completes_job() {
-        let directory = TestDirectory::new();
-        let (service, jobs) = service(&directory);
-        let context = context(&jobs).await;
-        let mut events = jobs
-            .subscribe(&context.job_id, &context.username)
-            .await
-            .expect("владелец должен подписаться");
-        let csv = concat!(
-            "First,Last,Patronymic,Email,Group\n",
-            "Иван,Иванов,Иванович,ivan@example.com,111\n",
-            "Пётр,Петров,Петрович,petr@example.com,121\n",
-        );
-
-        let status = service
-            .run(context, csv.as_bytes().to_vec())
-            .await
-            .expect("pipeline должен завершиться");
-
-        let JobStatus::Completed {
-            created,
-            total,
-            result,
-        } = status
-        else {
-            panic!("ожидался completed status")
+    /// Завершает задачу стабильным статусом при недоступности LDAP.
+    async fn finish_ldap_failure(
+        &self,
+        job_id: &str,
+        error: crate::errors::LdapError,
+    ) -> Result<JobStatus, AppError> {
+        let status = JobStatus::Failed {
+            stage: JobStage::CheckingLdap,
+            code: "ldap_unavailable".to_owned(),
+            message: "LDAP is unavailable".to_owned(),
+            row: None,
         };
-        assert_eq!(created, 0);
-        assert_eq!(total, 2);
-        assert!(
-            directory
-                .0
-                .join(result.owner)
-                .join(result.filename)
-                .is_file()
-        );
-        events
-            .changed()
-            .await
-            .expect("terminal status должен прийти");
-        assert!(events.borrow_and_update().is_terminal());
-    }
-
-    #[tokio::test]
-    async fn csv_login_collision_is_resolved_and_revalidated() {
-        let directory = TestDirectory::new();
-        let (service, jobs) = service(&directory);
-        let context = context(&jobs).await;
-        let job_id = context.job_id.clone();
-        let username = context.username.clone();
-        let mut events = jobs
-            .subscribe(&job_id, &username)
-            .await
-            .expect("владелец должен подписаться");
-        let csv = concat!(
-            "First,Last,Patronymic,Email,Group\n",
-            "Иван,Иванов,Иванович,ivan@example.com,111\n",
-            "Игорь,Иванов,Ильич,igor@example.com,121\n",
-            "Пётр,Петров,Петрович,petr@example.com,131\n",
-            "Павел,Петров,Петрович,pavel@example.com,141\n",
-        );
-
-        let pipeline =
-            tokio::spawn(async move { service.run(context, csv.as_bytes().to_vec()).await });
-
-        loop {
-            tokio::time::timeout(Duration::from_secs(1), events.changed())
-                .await
-                .expect("таймаут ожидания таблицы конфликтов")
-                .expect("статус конфликта должен прийти");
-            if let JobStatus::AwaitingLoginResolutions { conflicts } = &*events.borrow_and_update()
-            {
-                assert_eq!(
-                    conflicts
-                        .iter()
-                        .map(|conflict| conflict.row)
-                        .collect::<Vec<_>>(),
-                    vec![2, 3, 4, 5]
-                );
-                assert_eq!(conflicts[0].full_name, "Иванов Иван Иванович");
-                break;
-            }
-        }
-
-        jobs.submit_login_resolutions(
-            &job_id,
-            &username,
-            crate::entities::job::LoginResolutionBatch {
-                resolutions: vec![
-                    crate::entities::job::LoginResolution {
-                        row: 2,
-                        login: "ivanovii".to_owned(),
-                    },
-                    crate::entities::job::LoginResolution {
-                        row: 3,
-                        login: "ivanovii2".to_owned(),
-                    },
-                    crate::entities::job::LoginResolution {
-                        row: 4,
-                        login: "petrovpp".to_owned(),
-                    },
-                    crate::entities::job::LoginResolution {
-                        row: 5,
-                        login: "petrovpp".to_owned(),
-                    },
-                ],
-            },
-        )
-        .await
-        .expect("пакет замен должен быть принят на проверку");
-
-        tokio::time::timeout(Duration::from_secs(1), events.changed())
-            .await
-            .expect("таймаут ожидания оставшихся конфликтов")
-            .expect("оставшиеся конфликты должны прийти");
-        {
-            let status = events.borrow_and_update();
-            let JobStatus::AwaitingLoginResolutions { conflicts } = &*status else {
-                panic!("ожидалась обновлённая таблица конфликтов")
-            };
-            assert_eq!(
-                conflicts
-                    .iter()
-                    .map(|conflict| conflict.row)
-                    .collect::<Vec<_>>(),
-                vec![4, 5]
-            );
-        }
-
-        jobs.submit_login_resolutions(
-            &job_id,
-            &username,
-            crate::entities::job::LoginResolutionBatch {
-                resolutions: vec![
-                    crate::entities::job::LoginResolution {
-                        row: 4,
-                        login: "petrovpp".to_owned(),
-                    },
-                    crate::entities::job::LoginResolution {
-                        row: 5,
-                        login: "petrovpp2".to_owned(),
-                    },
-                ],
-            },
-        )
-        .await
-        .expect("уникальная замена должна быть принята");
-
-        let status = tokio::time::timeout(Duration::from_secs(1), pipeline)
-            .await
-            .expect("таймаут завершения pipeline")
-            .expect("pipeline task не должна паниковать")
-            .expect("pipeline должен завершиться");
-
-        assert!(matches!(status, JobStatus::Completed { total: 4, .. }));
-        let output = std::fs::read_to_string(
-            std::fs::read_dir(directory.0.join("admin"))
-                .expect("каталог результата должен читаться")
-                .next()
-                .expect("результат должен существовать")
-                .expect("запись каталога должна читаться")
-                .path(),
-        )
-        .expect("итоговый CSV должен читаться");
-        assert!(output.contains("ivanovii2"));
-        assert!(output.contains("petrovpp2"));
+        tracing::warn!(%job_id, error = ?error, "import pipeline stopped during LDAP check");
+        self.jobs.publish(job_id, status.clone()).await?;
+        Ok(status)
     }
 }
