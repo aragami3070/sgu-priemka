@@ -2,18 +2,11 @@ use std::sync::Arc;
 
 use axum::{extract::FromRequestParts, http::request::Parts};
 
-use crate::{
-    api::cookies,
-    entities::auth::{KerberosCredentials, SessionId},
-    errors::AppError,
-    state::AppState,
-};
+use crate::{api::cookies, entities::auth::KerberosCredentials, errors::AppError, state::AppState};
 
 /// Данные аутентифицированного пользователя для защищённых обработчиков.
 #[derive(Clone)]
 pub(super) struct AuthenticatedUser {
-    /// Идентификатор локальной сессии, прочитанный из cookie и проверенный в хранилище.
-    pub(super) session_id: SessionId,
     /// Каноническое имя пользователя из `sAMAccountName`.
     pub(super) username: String,
     /// Credentials текущей сессии для LDAP-операций от имени вошедшего пользователя.
@@ -37,7 +30,6 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         );
 
         Ok(Self {
-            session_id,
             username: session.username,
             kerberos_credentials: session.kerberos_credentials,
         })
