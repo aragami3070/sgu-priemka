@@ -44,7 +44,7 @@ pub(crate) struct ImportService {
     /// Сервис записи итоговых CSV.
     results: Arc<ResultService>,
     /// Для доступа к соли для вычисления временных паролей.
-    salt: Arc<Config>,
+    config: Arc<Config>,
     /// Блокировка, исключающая параллельную запись нескольких импортов в LDAP.
     lock: Arc<Semaphore>,
 }
@@ -55,13 +55,13 @@ impl ImportService {
         ldap: Arc<LdapService>,
         jobs: Arc<JobService>,
         results: Arc<ResultService>,
-        salt: Arc<Config>,
+        config: Arc<Config>,
     ) -> Self {
         Self {
             ldap,
             jobs,
             results,
-            salt,
+            config,
             lock: Arc::new(Semaphore::new(1)),
         }
     }
@@ -129,7 +129,7 @@ impl ImportService {
 
         self.publish_progress(&context.job_id, JobStage::GeneratingPasswords, 0, total)
             .await?;
-        let salt = self.salt.salt.clone();
+        let salt = self.config.salt.clone();
         let students = tokio::task::spawn_blocking(move || {
             identities
                 .into_iter()
@@ -161,7 +161,7 @@ impl ImportService {
             .await?;
         let stored = match self
             .results
-            .create(&context.ldap_credentials, &students)
+            .create(&context.kerberos_credentials, &students)
             .await
         {
             Ok(stored) => stored,
@@ -195,6 +195,7 @@ impl ImportService {
         Ok(status)
     }
 
+    /// Публикует промежуточный статус pipeline для подписчиков задачи.
     async fn publish_progress(
         &self,
         job_id: &str,
@@ -370,6 +371,7 @@ impl ImportService {
         }
     }
 
+    /// Преобразует ошибку разбора/валидации в финальный статус задачи.
     async fn finish_import_error(
         &self,
         job_id: &str,
@@ -400,6 +402,7 @@ impl ImportService {
         Ok(status)
     }
 
+    /// Публикует финальную ошибку внутреннего этапа pipeline.
     async fn finish_internal_failure(
         &self,
         job_id: &str,
@@ -422,8 +425,9 @@ mod tests {
     use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
     use crate::{
-        config::{LdapConfig, ResultConfig},
-        entities::auth::LdapCredentials,
+        config::{KerberosConfig, LdapConfig, ResultConfig},
+        entities::auth::KerberosCredentials,
+        services::kerberos::KerberosService,
     };
 
     use super::*;
@@ -456,10 +460,14 @@ mod tests {
             session_ttl: Duration::from_secs(60),
             ldap: LdapConfig {
                 url: "ldap://ldap.test".to_owned(),
-                user_bind_domain: "MAIN".to_owned(),
+                gssapi_host: "ldap.test".to_owned(),
                 auth_search_base_dn: "DC=main,DC=sgu,DC=ru".to_owned(),
                 users_container_dn: "OU=Users,DC=main,DC=sgu,DC=ru".to_owned(),
                 csit_admins_group_dn: "CN=Admins,DC=main,DC=sgu,DC=ru".to_owned(),
+            },
+            kerberos: KerberosConfig {
+                realm: "MAIN.SGU.RU".to_owned(),
+                ccache_dir: directory.0.join("krb5"),
             },
             results: ResultConfig {
                 output_dir: directory.0.clone(),
@@ -474,7 +482,8 @@ mod tests {
         let results = Arc::new(
             ResultService::new(config.clone()).expect("хранилище результатов должно создаться"),
         );
-        let ldap = Arc::new(LdapService::new(config.clone()));
+        let kerberos = Arc::new(KerberosService::for_tests(directory.0.join("krb5")));
+        let ldap = Arc::new(LdapService::new(config.clone(), kerberos));
         (
             ImportService::new(ldap, jobs.clone(), results, config),
             jobs,
@@ -497,7 +506,7 @@ mod tests {
         ImportContext {
             job_id,
             username: username.clone(),
-            ldap_credentials: Arc::new(LdapCredentials::new(username, "password".to_owned())),
+            kerberos_credentials: Arc::new(KerberosCredentials::for_tests(username)),
             original_filename: "students.csv".to_owned(),
         }
     }

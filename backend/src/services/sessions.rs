@@ -8,21 +8,24 @@ use std::{
 };
 
 use crate::{
-    entities::auth::{LdapCredentials, LdapIdentity, Session, SessionId},
+    entities::auth::{KerberosCredentials, LdapIdentity, Session, SessionId},
     errors::AppError,
+    services::kerberos::KerberosService,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 
 /// Хранилище локальных сессий в памяти с debug-only восстановлением из файла.
 ///
-/// Cookie содержит только `SessionId`. Release-сборка держит LDAP credentials
-/// только в памяти; debug-сборка сохраняет их локально между перезапусками.
+/// Cookie содержит только `SessionId`. Debug snapshot содержит principal, путь
+/// к ccache и сроки, но никогда не содержит исходный пароль или Kerberos ticket.
 pub(crate) struct SessionService {
     /// Сессии индексируются только по непрозрачному значению из cookie.
     store: RwLock<HashMap<SessionId, Session>>,
     /// Единый срок действия новых сессий из конфигурации приложения.
     ttl: Duration,
+    /// Управляет FILE ccache при удалении и восстановлении сессий.
+    kerberos: Arc<KerberosService>,
     /// Debug-only файл, позволяющий пережить перезапуск backend во время разработки.
     persistence_path: Option<PathBuf>,
     /// Не допускает гонки нескольких атомарных записей одного snapshot-файла.
@@ -34,22 +37,29 @@ struct PersistedSession {
     id: String,
     username: String,
     identifier: String,
-    password: String,
+    principal: String,
+    ccache_path: PathBuf,
+    tgt_expires_at_unix_ms: u64,
     expires_at_unix_ms: u64,
 }
 
 impl SessionService {
     /// Создаёт пустое хранилище сессий в памяти.
-    pub(crate) fn new(ttl: Duration) -> Self {
+    pub(crate) fn new(ttl: Duration, kerberos: Arc<KerberosService>) -> Self {
         let persistence_path = cfg!(all(debug_assertions, not(test)))
             .then(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".dev-sessions.json"));
-        Self::with_persistence(ttl, persistence_path)
+        Self::with_persistence(ttl, kerberos, persistence_path)
     }
 
-    fn with_persistence(ttl: Duration, persistence_path: Option<PathBuf>) -> Self {
+    /// Создаёт хранилище и, если задан путь, восстанавливает debug-сессии с диска.
+    fn with_persistence(
+        ttl: Duration,
+        kerberos: Arc<KerberosService>,
+        persistence_path: Option<PathBuf>,
+    ) -> Self {
         let store = persistence_path
             .as_deref()
-            .map(load_sessions)
+            .map(|path| load_sessions(path, &kerberos))
             .unwrap_or_default();
         if let Some(path) = &persistence_path {
             tracing::info!(
@@ -62,71 +72,65 @@ impl SessionService {
         Self {
             store: RwLock::new(store),
             ttl,
+            kerberos,
             persistence_path,
             persistence_lock: Mutex::new(()),
         }
     }
 
-    /// Создаёт локальную сессию с credentials пользователя.
+    /// Создаёт локальную сессию, срок которой ограничен expiry Kerberos TGT.
     pub(crate) async fn create(
         &self,
+        id: SessionId,
         identity: LdapIdentity,
-        ldap_credentials: LdapCredentials,
-    ) -> Result<(SessionId, Session), AppError> {
-        let expires_at = SystemTime::now()
-            .checked_add(self.ttl)
-            .ok_or(AppError::Internal)?;
+        kerberos_credentials: KerberosCredentials,
+    ) -> Result<Session, AppError> {
+        let now = SystemTime::now();
+        let configured_expires_at = now.checked_add(self.ttl).ok_or(AppError::Internal)?;
+        let expires_at = configured_expires_at.min(kerberos_credentials.tgt_expires_at());
+        if expires_at <= now {
+            return Err(AppError::Unauthorized);
+        }
         let session = Session {
             username: identity.username,
-            ldap_credentials: Arc::new(ldap_credentials),
+            kerberos_credentials: Arc::new(kerberos_credentials),
             expires_at,
         };
 
         let mut store = self.store.write().await;
-        let id = loop {
-            let candidate = SessionId::new();
-            if !store.contains_key(&candidate) {
-                break candidate;
-            }
-        };
+        if store.contains_key(&id) {
+            return Err(AppError::Internal);
+        }
 
-        store.insert(id.clone(), session.clone());
-        tracing::info!(
-            username = %session.username,
-            active_sessions = store.len(),
-            "local session created and stored"
-        );
+        store.insert(id, session.clone());
         drop(store);
         self.persist().await;
 
-        Ok((id, session))
+        Ok(session)
     }
 
     /// Возвращает неистёкшую сессию по непрозрачному идентификатору.
     pub(crate) async fn get(&self, id: &SessionId) -> Result<Session, AppError> {
         let mut store = self.store.write().await;
         let Some(session) = store.get(id) else {
-            tracing::info!(active_sessions = store.len(), "local session was not found");
             return Err(AppError::Unauthorized);
         };
 
         if session.expires_at <= SystemTime::now() {
-            let username = session.username.clone();
-            store.remove(id);
+            let expired = store.remove(id).ok_or(AppError::Unauthorized)?;
             tracing::info!(
-                %username,
+                username = %expired.username,
                 active_sessions = store.len(),
                 "expired local session removed during lookup"
             );
             drop(store);
+            self.kerberos
+                .destroy_cache(&expired.kerberos_credentials)
+                .await;
             self.persist().await;
             return Err(AppError::Unauthorized);
         }
 
-        tracing::info!(
-            username = %session.username,
-            "valid local session found"
-        );
         Ok(session.clone())
     }
 
@@ -134,19 +138,11 @@ impl SessionService {
     pub(crate) async fn remove(&self, id: &SessionId) -> Option<Session> {
         let mut store = self.store.write().await;
         let removed = store.remove(id);
-        match &removed {
-            Some(session) => tracing::info!(
-                username = %session.username,
-                active_sessions = store.len(),
-                "local session removed"
-            ),
-            None => tracing::info!(
-                active_sessions = store.len(),
-                "local session to remove was not found"
-            ),
-        }
         drop(store);
-        if removed.is_some() {
+        if let Some(session) = &removed {
+            self.kerberos
+                .destroy_cache(&session.kerberos_credentials)
+                .await;
             self.persist().await;
         }
         removed
@@ -154,24 +150,30 @@ impl SessionService {
 
     /// Удаляет сессии с истёкшим локальным сроком действия.
     pub(crate) async fn cleanup_expired(&self) {
-        tracing::info!("starting expired session cleanup");
         let now = SystemTime::now();
         let mut store = self.store.write().await;
-        let before = store.len();
-        store.retain(|_, session| session.expires_at > now);
-        tracing::info!(
-            sessions_before = before,
-            sessions_after = store.len(),
-            removed_sessions = before - store.len(),
-            "expired session cleanup completed"
-        );
-        let changed = before != store.len();
+        let expired_ids = store
+            .iter()
+            .filter_map(|(id, session)| (session.expires_at <= now).then_some(id.clone()))
+            .collect::<Vec<_>>();
+        let removed = expired_ids
+            .into_iter()
+            .filter_map(|id| store.remove(&id))
+            .collect::<Vec<_>>();
+        let changed = !removed.is_empty();
         drop(store);
         if changed {
+            tracing::info!(removed_sessions = removed.len(), "expired sessions removed");
+            for session in &removed {
+                self.kerberos
+                    .destroy_cache(&session.kerberos_credentials)
+                    .await;
+            }
             self.persist().await;
         }
     }
 
+    /// Атомарно сохраняет допустимый debug-снимок сессий.
     async fn persist(&self) {
         let Some(path) = self.persistence_path.clone() else {
             return;
@@ -181,17 +183,16 @@ impl SessionService {
             let store = self.store.read().await;
             persisted_snapshot(&store)
         };
-        let persisted_sessions = snapshot.len();
-
         let result = tokio::task::spawn_blocking(move || write_sessions(&path, &snapshot)).await;
         match result {
-            Ok(Ok(())) => tracing::info!(persisted_sessions, "debug sessions persisted"),
+            Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::warn!(%error, "failed to persist debug sessions"),
             Err(error) => tracing::warn!(%error, "debug session persistence task failed"),
         }
     }
 }
 
+/// Преобразует in-memory сессии в сериализуемый debug-снимок без паролей и ticket-ов.
 fn persisted_snapshot(store: &HashMap<SessionId, Session>) -> Vec<PersistedSession> {
     store
         .iter()
@@ -203,18 +204,29 @@ fn persisted_snapshot(store: &HashMap<SessionId, Session>) -> Vec<PersistedSessi
                 .as_millis()
                 .try_into()
                 .ok()?;
+            let tgt_expires_at_unix_ms = session
+                .kerberos_credentials
+                .tgt_expires_at()
+                .duration_since(UNIX_EPOCH)
+                .ok()?
+                .as_millis()
+                .try_into()
+                .ok()?;
             Some(PersistedSession {
                 id: id.to_string(),
                 username: session.username.clone(),
-                identifier: session.ldap_credentials.identifier().to_owned(),
-                password: session.ldap_credentials.password().to_owned(),
+                identifier: session.kerberos_credentials.identifier().to_owned(),
+                principal: session.kerberos_credentials.principal().to_owned(),
+                ccache_path: session.kerberos_credentials.ccache_path().to_owned(),
+                tgt_expires_at_unix_ms,
                 expires_at_unix_ms,
             })
         })
         .collect()
 }
 
-fn load_sessions(path: &Path) -> HashMap<SessionId, Session> {
+/// Загружает и валидирует debug-сессии, отбрасывая истёкшие или неполные ccache.
+fn load_sessions(path: &Path, kerberos: &KerberosService) -> HashMap<SessionId, Session> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return HashMap::new(),
@@ -227,6 +239,9 @@ fn load_sessions(path: &Path) -> HashMap<SessionId, Session> {
         Ok(persisted) => persisted,
         Err(error) => {
             tracing::warn!(path = %path.display(), %error, "failed to parse debug sessions");
+            if let Err(remove_error) = std::fs::remove_file(path) {
+                tracing::warn!(path = %path.display(), %remove_error, "failed to remove incompatible debug session snapshot");
+            }
             return HashMap::new();
         }
     };
@@ -238,15 +253,20 @@ fn load_sessions(path: &Path) -> HashMap<SessionId, Session> {
             let id = session.id.parse::<SessionId>().ok()?;
             let expires_at =
                 UNIX_EPOCH.checked_add(Duration::from_millis(session.expires_at_unix_ms))?;
-            (expires_at > now).then(|| {
+            let tgt_expires_at =
+                UNIX_EPOCH.checked_add(Duration::from_millis(session.tgt_expires_at_unix_ms))?;
+            let credentials = KerberosCredentials::new(
+                session.identifier,
+                session.principal,
+                session.ccache_path,
+                tgt_expires_at,
+            );
+            (expires_at > now && kerberos.is_restorable(&id, &credentials)).then(|| {
                 (
                     id,
                     Session {
                         username: session.username,
-                        ldap_credentials: Arc::new(LdapCredentials::new(
-                            session.identifier,
-                            session.password,
-                        )),
+                        kerberos_credentials: Arc::new(credentials),
                         expires_at,
                     },
                 )
@@ -255,6 +275,7 @@ fn load_sessions(path: &Path) -> HashMap<SessionId, Session> {
         .collect()
 }
 
+/// Записывает debug-снимок через временный файл и атомарное переименование.
 fn write_sessions(path: &Path, sessions: &[PersistedSession]) -> io::Result<()> {
     let bytes = serde_json::to_vec(sessions).map_err(io::Error::other)?;
     let temporary_path = path.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
@@ -282,69 +303,122 @@ fn write_sessions(path: &Path, sessions: &[PersistedSession]) -> io::Result<()> 
 mod tests {
     use super::*;
 
-    struct TestFile(PathBuf);
+    struct TestFiles {
+        persistence: PathBuf,
+        ccache_dir: PathBuf,
+    }
 
-    impl TestFile {
+    impl TestFiles {
         fn new() -> Self {
-            Self(std::env::temp_dir().join(format!(
-                "sgu-priemka-sessions-{}.json",
-                uuid::Uuid::new_v4()
-            )))
+            let root =
+                std::env::temp_dir().join(format!("sgu-priemka-sessions-{}", uuid::Uuid::new_v4()));
+            Self {
+                persistence: root.with_extension("json"),
+                ccache_dir: root.join("krb5"),
+            }
+        }
+
+        fn kerberos(&self) -> Arc<KerberosService> {
+            Arc::new(KerberosService::for_tests(self.ccache_dir.clone()))
+        }
+
+        fn credentials(&self, id: &SessionId) -> KerberosCredentials {
+            let ccache_path = self.ccache_dir.join(format!("{id}.ccache"));
+            std::fs::write(&ccache_path, b"test ccache")
+                .expect("тестовый ccache должен записываться");
+            KerberosCredentials::new(
+                "admin".to_owned(),
+                "admin@MAIN.SGU.RU".to_owned(),
+                ccache_path,
+                SystemTime::now() + Duration::from_secs(120),
+            )
         }
     }
 
-    impl Drop for TestFile {
+    impl Drop for TestFiles {
         fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::remove_file(&self.persistence);
+            let _ = std::fs::remove_dir_all(
+                self.ccache_dir
+                    .parent()
+                    .expect("тестовый ccache имеет parent"),
+            );
         }
     }
 
     #[tokio::test]
     async fn restores_session_with_credentials_from_debug_file() {
-        let file = TestFile::new();
-        let service =
-            SessionService::with_persistence(Duration::from_secs(60), Some(file.0.clone()));
-        let (id, _) = service
+        let files = TestFiles::new();
+        let kerberos = files.kerberos();
+        let id = SessionId::new();
+        let credentials = files.credentials(&id);
+        let service = SessionService::with_persistence(
+            Duration::from_secs(60),
+            kerberos.clone(),
+            Some(files.persistence.clone()),
+        );
+        service
             .create(
+                id.clone(),
                 LdapIdentity {
                     username: "admin".to_owned(),
                 },
-                LdapCredentials::new("admin".to_owned(), "secret".to_owned()),
+                credentials,
             )
             .await
             .expect("сессия должна создаться");
-        drop(service);
 
-        let restored =
-            SessionService::with_persistence(Duration::from_secs(60), Some(file.0.clone()))
-                .get(&id)
-                .await
-                .expect("сессия должна восстановиться");
+        let restored = SessionService::with_persistence(
+            Duration::from_secs(60),
+            kerberos,
+            Some(files.persistence.clone()),
+        )
+        .get(&id)
+        .await
+        .expect("сессия должна восстановиться");
 
         assert_eq!(restored.username, "admin");
-        assert_eq!(restored.ldap_credentials.identifier(), "admin");
-        assert_eq!(restored.ldap_credentials.password(), "secret");
+        assert_eq!(restored.kerberos_credentials.identifier(), "admin");
+        assert_eq!(
+            restored.kerberos_credentials.principal(),
+            "admin@MAIN.SGU.RU"
+        );
+        let persisted =
+            std::fs::read_to_string(&files.persistence).expect("snapshot должен читаться");
+        assert!(!persisted.contains("password"));
+        assert!(!persisted.contains("secret"));
     }
 
     #[tokio::test]
     async fn removed_session_is_removed_from_debug_file() {
-        let file = TestFile::new();
-        let service =
-            SessionService::with_persistence(Duration::from_secs(60), Some(file.0.clone()));
-        let (id, _) = service
+        let files = TestFiles::new();
+        let kerberos = files.kerberos();
+        let id = SessionId::new();
+        let credentials = files.credentials(&id);
+        let cache_path = credentials.ccache_path().to_owned();
+        let service = SessionService::with_persistence(
+            Duration::from_secs(60),
+            kerberos.clone(),
+            Some(files.persistence.clone()),
+        );
+        service
             .create(
+                id.clone(),
                 LdapIdentity {
                     username: "admin".to_owned(),
                 },
-                LdapCredentials::new("admin".to_owned(), "secret".to_owned()),
+                credentials,
             )
             .await
             .expect("сессия должна создаться");
         service.remove(&id).await;
-        drop(service);
+        assert!(!cache_path.exists());
 
-        let restored =
-            SessionService::with_persistence(Duration::from_secs(60), Some(file.0.clone()));
+        let restored = SessionService::with_persistence(
+            Duration::from_secs(60),
+            kerberos,
+            Some(files.persistence.clone()),
+        );
         assert!(matches!(
             restored.get(&id).await,
             Err(AppError::Unauthorized)

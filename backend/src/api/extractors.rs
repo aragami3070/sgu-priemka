@@ -4,7 +4,7 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::{
     api::cookies,
-    entities::auth::{LdapCredentials, SessionId},
+    entities::auth::{KerberosCredentials, SessionId},
     errors::AppError,
     state::AppState,
 };
@@ -17,7 +17,7 @@ pub(super) struct AuthenticatedUser {
     /// Каноническое имя пользователя из `sAMAccountName`.
     pub(super) username: String,
     /// Credentials текущей сессии для LDAP-операций от имени вошедшего пользователя.
-    pub(super) ldap_credentials: Arc<LdapCredentials>,
+    pub(super) kerberos_credentials: Arc<KerberosCredentials>,
 }
 
 impl FromRequestParts<AppState> for AuthenticatedUser {
@@ -32,14 +32,14 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         let session = state.sessions.get(&session_id).await?;
         tracing::info!(
             username = %session.username,
-            ldap_identifier = session.ldap_credentials.identifier(),
+            ldap_identifier = session.kerberos_credentials.identifier(),
             "authenticated user extraction completed"
         );
 
         Ok(Self {
             session_id,
             username: session.username,
-            ldap_credentials: session.ldap_credentials,
+            kerberos_credentials: session.kerberos_credentials,
         })
     }
 }

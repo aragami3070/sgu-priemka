@@ -5,7 +5,7 @@ use axum::{
 };
 use thiserror::Error;
 
-use super::{LdapAuthError, ResultError};
+use super::{KerberosError, LdapError, ResultError};
 
 /// Ошибки, которые прикладные сервисы могут передать в HTTP-слой.
 #[derive(Debug, Error)]
@@ -61,26 +61,41 @@ impl IntoResponse for AppError {
                 "internal server error".to_owned(),
             ),
         };
-        tracing::warn!(
-            http_status = status.as_u16(),
-            error_message = %message,
-            "returning application error response"
-        );
-
         (status, Json(message)).into_response()
     }
 }
 
-impl From<LdapAuthError> for AppError {
-    fn from(error: LdapAuthError) -> Self {
-        tracing::warn!(%error, "mapping LDAP authentication error to application error");
+impl From<LdapError> for AppError {
+    fn from(error: LdapError) -> Self {
+        tracing::warn!(error = ?error, "LDAP request failed");
         match error {
-            LdapAuthError::InvalidCredentials => Self::Unauthorized,
-            LdapAuthError::Forbidden => Self::Forbidden,
-            LdapAuthError::Unavailable => Self::LdapUnavailable,
-            LdapAuthError::MissingSamAccountName | LdapAuthError::UnexpectedSearchResult => {
+            LdapError::InvalidCredentials => Self::Unauthorized,
+            LdapError::Forbidden => Self::Forbidden,
+            LdapError::Connect { .. }
+            | LdapError::Kerberos { .. }
+            | LdapError::AuthenticationTransport { .. }
+            | LdapError::AuthenticationRejected { .. }
+            | LdapError::Search { .. }
+            | LdapError::Operation { .. } => Self::LdapUnavailable,
+            LdapError::MissingAttribute { .. } | LdapError::UnexpectedSearchResult { .. } => {
                 Self::Internal
             }
+        }
+    }
+}
+
+impl From<KerberosError> for AppError {
+    fn from(error: KerberosError) -> Self {
+        tracing::warn!(error = ?error, "Kerberos request failed");
+        match error {
+            KerberosError::InvalidCredentials => Self::Unauthorized,
+            KerberosError::CacheIo { .. }
+            | KerberosError::Library { .. }
+            | KerberosError::Gssapi { .. }
+            | KerberosError::BlockingTask { .. }
+            | KerberosError::InvalidExpiration
+            | KerberosError::InteriorNul { .. }
+            | KerberosError::CacheAlreadyExists(_) => Self::LdapUnavailable,
         }
     }
 }

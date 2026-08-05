@@ -1,41 +1,83 @@
-use std::{fmt, str::FromStr, sync::Arc, time::SystemTime};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+    time::SystemTime,
+};
 
 use uuid::Uuid;
 
-/// Идентификатор пользователя после успешного LDAP bind и проверки `csit_admins`.
+/// Идентификатор пользователя после успешной LDAP-аутентификации и проверки `csit_admins`.
 #[derive(Clone, Debug)]
 pub(crate) struct LdapIdentity {
     /// Каноническое имя пользователя из LDAP-атрибута `sAMAccountName`.
     pub(crate) username: String,
 }
 
-/// Credentials вошедшего пользователя для повторных LDAP bind в рамках сессии.
-///
-/// Тип намеренно не реализует `Debug`, чтобы пароль нельзя было случайно вывести в лог.
-pub(crate) struct LdapCredentials {
-    /// Канонический `sAMAccountName`, полученный после проверки пользователя в LDAP.
+/// Персональный Kerberos context вошедшего пользователя для explicit GSSAPI-аутентификации.
+#[derive(Clone, Debug)]
+pub(crate) struct KerberosCredentials {
+    /// Канонический `sAMAccountName`, подтверждённый LDAP-проверкой доступа.
     identifier: String,
-    /// Пароль LDAP, хранящийся в backend до удаления сессии.
-    password: String,
+    /// Полный Kerberos principal пользователя.
+    principal: String,
+    /// Путь к изолированному FILE ccache этой сессии.
+    ccache_path: PathBuf,
+    /// Срок действия полученного TGT.
+    tgt_expires_at: SystemTime,
 }
 
-impl LdapCredentials {
-    /// Создаёт credentials после успешной проверки LDAP bind.
-    pub(crate) fn new(identifier: String, password: String) -> Self {
+impl KerberosCredentials {
+    /// Создаёт проверенный Kerberos context после успешного получения TGT.
+    pub(crate) fn new(
+        identifier: String,
+        principal: String,
+        ccache_path: PathBuf,
+        tgt_expires_at: SystemTime,
+    ) -> Self {
         Self {
             identifier,
-            password,
+            principal,
+            ccache_path,
+            tgt_expires_at,
         }
     }
 
-    /// Возвращает канонический `sAMAccountName` для bind и каталога результатов.
+    /// Возвращает канонический `sAMAccountName` для LDAP-поиска и аудита.
     pub(crate) fn identifier(&self) -> &str {
         &self.identifier
     }
 
-    /// Возвращает пароль только для выполнения пользовательского LDAP bind.
-    pub(crate) fn password(&self) -> &str {
-        &self.password
+    /// Заменяет введённый identifier каноническим `sAMAccountName` из LDAP.
+    pub(crate) fn set_identifier(&mut self, identifier: String) {
+        self.identifier = identifier;
+    }
+
+    /// Возвращает полный principal, которому принадлежит ccache.
+    pub(crate) fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    /// Возвращает путь к FILE ccache без изменения process-global окружения.
+    pub(crate) fn ccache_path(&self) -> &Path {
+        &self.ccache_path
+    }
+
+    /// Возвращает срок действия TGT для ограничения локальной сессии.
+    pub(crate) fn tgt_expires_at(&self) -> SystemTime {
+        self.tgt_expires_at
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_tests(identifier: impl Into<String>) -> Self {
+        let identifier = identifier.into();
+        Self::new(
+            identifier.clone(),
+            format!("{identifier}@MAIN.SGU.RU"),
+            PathBuf::from("/tmp/test.ccache"),
+            SystemTime::now() + std::time::Duration::from_secs(3600),
+        )
     }
 }
 
@@ -67,15 +109,13 @@ impl FromStr for SessionId {
     }
 }
 
-/// Локальная серверная сессия с credentials вошедшего LDAP-пользователя.
-///
-/// Тип намеренно не реализует `Debug`, чтобы credentials не могли попасть в лог.
+/// Локальная серверная сессия с персональным Kerberos context пользователя.
 #[derive(Clone)]
 pub(crate) struct Session {
     /// Каноническое имя пользователя из `sAMAccountName`.
     pub(crate) username: String,
-    /// Credentials используются всеми LDAP-операциями, запущенными из этой сессии.
-    pub(crate) ldap_credentials: Arc<LdapCredentials>,
+    /// Kerberos context используется для explicit GSSAPI-аутентификации от имени этой сессии.
+    pub(crate) kerberos_credentials: Arc<KerberosCredentials>,
     /// Момент, после которого локальная сессия считается истёкшей.
     pub(crate) expires_at: SystemTime,
 }

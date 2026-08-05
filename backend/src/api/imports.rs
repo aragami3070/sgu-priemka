@@ -79,7 +79,7 @@ async fn create_import(
     let context = ImportContext {
         job_id: job_id.clone(),
         username: user.username,
-        ldap_credentials: user.ldap_credentials,
+        kerberos_credentials: user.kerberos_credentials,
         original_filename,
     };
     let imports = state.imports.clone();
@@ -107,6 +107,7 @@ async fn import_events(
     }))
 }
 
+/// Извлекает единственный CSV из multipart и применяет лимит размера файла.
 async fn read_csv_upload(mut multipart: Multipart) -> Result<(String, Vec<u8>), AppError> {
     let mut upload = None;
 
@@ -150,6 +151,7 @@ async fn read_csv_upload(mut multipart: Multipart) -> Result<(String, Vec<u8>), 
     upload.ok_or_else(|| AppError::InvalidUpload("CSV file is missing".to_owned()))
 }
 
+/// Передаёт текущие и последующие статусы задачи через WebSocket.
 async fn stream_job_events(
     mut socket: axum::extract::ws::WebSocket,
     job_id: String,

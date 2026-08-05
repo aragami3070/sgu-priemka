@@ -4,8 +4,8 @@ use crate::{
     config::Config,
     errors::AppError,
     services::{
-        import::ImportService, jobs::JobService, ldap::LdapService, results::ResultService,
-        sessions::SessionService,
+        import::ImportService, jobs::JobService, kerberos::KerberosService, ldap::LdapService,
+        results::ResultService, sessions::SessionService,
     },
 };
 
@@ -16,6 +16,8 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<Config>,
     /// Общий LDAP-сервис для входа операторов и операций от имени текущей сессии.
     pub(crate) ldap: Arc<LdapService>,
+    /// Получение TGT, explicit GSSAPI credentials и очистка session ccache.
+    pub(crate) kerberos: Arc<KerberosService>,
     /// Сервис локальных непрозрачных сессий.
     pub(crate) sessions: Arc<SessionService>,
     /// Сервис полного pipeline импорта.
@@ -32,8 +34,9 @@ impl AppState {
         let config = Arc::new(config);
 
         // NOTE: Инициализация сервисов
-        let ldap = Arc::new(LdapService::new(config.clone()));
-        let sessions = Arc::new(SessionService::new(config.session_ttl));
+        let kerberos = Arc::new(KerberosService::new(config.clone())?);
+        let ldap = Arc::new(LdapService::new(config.clone(), kerberos.clone()));
+        let sessions = Arc::new(SessionService::new(config.session_ttl, kerberos.clone()));
         let jobs = Arc::new(JobService::new());
         let results = Arc::new(ResultService::new(config.clone())?);
         let imports = Arc::new(ImportService::new(
@@ -46,6 +49,7 @@ impl AppState {
         let state = Self {
             config,
             ldap,
+            kerberos,
             sessions,
             jobs,
             imports,

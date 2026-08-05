@@ -7,10 +7,11 @@ use axum::{
 use axum_extra::extract::CookieJar;
 use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use zeroize::Zeroizing;
 
 use crate::{
     api::{cookies, extractors::AuthenticatedUser},
-    entities::auth::LdapCredentials,
+    entities::auth::SessionId,
     errors::AppError,
     state::AppState,
 };
@@ -23,12 +24,12 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/auth/whoami", get(whoami))
 }
 
-/// Учётные данные для прямого пользовательского LDAP bind.
+/// Учётные данные для получения персонального Kerberos TGT.
 #[derive(Deserialize)]
 struct LoginRequest {
-    /// Короткий идентификатор, из которого backend сформирует `DOMAIN\\identifier`.
+    /// Короткий идентификатор, из которого backend сформирует `<identifier>@REALM`.
     identifier: String,
-    /// Пароль, используемый только во время пользовательского LDAP bind.
+    /// Пароль, очищаемый сразу после ответа KDC.
     password: String,
 }
 
@@ -50,13 +51,12 @@ struct WhoAmIResponse {
 
 /// Проверяет локальную cookie-сессию и возвращает имя вошедшего пользователя.
 async fn whoami(user: AuthenticatedUser) -> Json<WhoAmIResponse> {
-    tracing::info!(username = %user.username, "current local session returned to frontend");
     Json(WhoAmIResponse {
         username: user.username,
     })
 }
 
-/// Выполняет LDAP bind, проверяет admin group dn и создаёт локальную сессию.
+/// Получает TGT, выполняет GSSAPI-аутентификацию, проверяет admin group и создаёт сессию.
 async fn login(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -66,20 +66,45 @@ async fn login(
         identifier,
         password,
     } = request;
+
     let identifier = identifier.trim().to_owned();
-    let identity = state.ldap.authenticate(&identifier, &password).await?;
+    let password = Zeroizing::new(password);
+    let session_id = SessionId::new();
+    let mut credentials = state
+        .kerberos
+        .acquire_tgt(identifier, password, &session_id)
+        .await?;
+    let identity = match state.ldap.authenticate(&credentials).await {
+        Ok(identity) => identity,
+        Err(error) => {
+            state.kerberos.destroy_cache(&credentials).await;
+            return Err(error.into());
+        }
+    };
 
     let username = identity.username.clone();
-    let credentials = LdapCredentials::new(username.clone(), password);
+    credentials.set_identifier(username.clone());
     let previous_session_id = cookies::session_id_from_jar(&jar).ok();
-    let expires_at = session_expiration(state.config.session_ttl)?;
-    let (session_id, _) = state.sessions.create(identity, credentials).await?;
-    tracing::info!(%username, "server-side login session created");
-
+    let session = match state
+        .sessions
+        .create(session_id.clone(), identity, credentials.clone())
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => {
+            state.kerberos.destroy_cache(&credentials).await;
+            return Err(error);
+        }
+    };
+    let cookie_ttl = session
+        .expires_at
+        .duration_since(std::time::SystemTime::now())
+        .map_err(|_| AppError::Unauthorized)?;
+    let expires_at = session_expiration(session.expires_at)?;
     let jar = match cookies::add_session_cookie(
         jar,
         &session_id,
-        state.config.session_ttl,
+        cookie_ttl,
         state.config.cookie_secure,
     ) {
         Ok(jar) => jar,
@@ -89,11 +114,8 @@ async fn login(
             return Err(error);
         }
     };
-    tracing::info!(%username, "session cookie added to login response");
-
     if let Some(previous_session_id) = previous_session_id {
         state.sessions.remove(&previous_session_id).await;
-        tracing::info!(%username, "previous session removal completed");
     }
 
     tracing::info!(%username, "user logged in");
@@ -119,17 +141,12 @@ async fn logout(
     }
 
     let jar = cookies::remove_session_cookie(jar, state.config.cookie_secure);
-    tracing::info!("logout request completed");
     Ok((jar, StatusCode::NO_CONTENT))
 }
 
 /// Возвращает абсолютный UTC-срок сессии в формате RFC 3339 для frontend.
-fn session_expiration(ttl: std::time::Duration) -> Result<String, AppError> {
-    let ttl = time::Duration::try_from(ttl).map_err(|_| AppError::Internal)?;
-    let expires_at = OffsetDateTime::now_utc()
-        .checked_add(ttl)
-        .ok_or(AppError::Internal)?;
-
+fn session_expiration(expires_at: std::time::SystemTime) -> Result<String, AppError> {
+    let expires_at = OffsetDateTime::from(expires_at);
     let formatted = expires_at
         .format(&Rfc3339)
         .map_err(|_| AppError::Internal)?;

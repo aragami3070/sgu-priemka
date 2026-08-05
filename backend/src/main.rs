@@ -1,8 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "типы и методы каркаса будут подключаться по мере реализации todo"
-)]
-
 mod api;
 mod config;
 mod entities;

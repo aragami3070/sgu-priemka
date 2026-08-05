@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{entities::auth::LdapCredentials, errors::UnsupportedGroupNumber};
+use crate::{entities::auth::KerberosCredentials, errors::UnsupportedGroupNumber};
 
 /// Нормализованное представление строки исходного CSV до валидации.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,15 +108,17 @@ pub(crate) struct PreparedStudent {
     pub(crate) password: SecretString,
 }
 
-/// Обёртка пароля
+/// Обёртка временного пароля, скрывающая внутреннее строковое представление.
 #[derive(Clone)]
 pub(crate) struct SecretString(String);
 
 impl SecretString {
+    /// Создаёт обёртку для сгенерированного пароля.
     pub(crate) fn new(password: String) -> Self {
         Self(password)
     }
 
+    /// Возвращает пароль для записи в итоговый CSV или LDAP-запрос.
     pub(crate) fn get(&self) -> &str {
         &self.0
     }
@@ -130,7 +132,7 @@ pub(crate) struct ImportContext {
     /// `sAMAccountName` пользователя, запустившего импорт.
     pub(crate) username: String,
     /// Credentials сессии, от имени которой выполняются все LDAP-операции импорта.
-    pub(crate) ldap_credentials: Arc<LdapCredentials>,
+    pub(crate) kerberos_credentials: Arc<KerberosCredentials>,
     /// Имя загруженного файла для диагностики и аудита.
     pub(crate) original_filename: String,
 }

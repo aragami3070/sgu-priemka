@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     config::Config,
-    entities::{auth::LdapCredentials, import::PreparedStudent, result::StoredResult},
+    entities::{auth::KerberosCredentials, import::PreparedStudent, result::StoredResult},
     errors::{AppError, ResultError},
 };
 
@@ -48,7 +48,7 @@ impl ResultService {
     /// Атомарно записывает CSV в каталог LDAP-пользователя, запустившего импорт.
     pub(crate) async fn create(
         &self,
-        credentials: &LdapCredentials,
+        credentials: &KerberosCredentials,
         students: &[PreparedStudent],
     ) -> Result<StoredResult, AppError> {
         let owner = credentials.identifier();
@@ -73,7 +73,6 @@ impl ResultService {
                 .await?;
             file.write_all(&bytes).await?;
             file.sync_all().await?;
-            drop(file);
             fs::rename(&temporary_path, &path).await
         }
         .await;
@@ -215,6 +214,7 @@ impl ResultService {
         Ok(())
     }
 
+    /// Собирает валидные CSV одного каталога владельца.
     async fn collect_owner_results(
         &self,
         owner: &str,
@@ -248,6 +248,7 @@ impl ResultService {
         Ok(())
     }
 
+    /// Проверяет запись каталога и преобразует её в метаданные результата.
     async fn inspect_result_entry(
         &self,
         entry: fs::DirEntry,
@@ -283,6 +284,7 @@ impl ResultService {
     }
 }
 
+/// Сериализует подготовленных студентов в итоговый CSV с credentials.
 fn serialize_students(students: &[PreparedStudent]) -> Result<Vec<u8>, AppError> {
     let mut writer = WriterBuilder::new()
         .terminator(Terminator::Any(b'\n'))
@@ -332,6 +334,7 @@ fn serialize_students(students: &[PreparedStudent]) -> Result<Vec<u8>, AppError>
         .map_err(Into::into)
 }
 
+/// Формирует детерминированное имя результата по времени его создания.
 fn result_filename(created_at: OffsetDateTime) -> String {
     format!(
         "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}.csv",
@@ -344,6 +347,7 @@ fn result_filename(created_at: OffsetDateTime) -> String {
     )
 }
 
+/// Проверяет, что имя результата безопасно и имеет расширение `.csv`.
 fn validate_result_filename(filename: &str) -> Result<(), AppError> {
     validate_path_segment(filename, "result filename")?;
     if !filename.ends_with(".csv") {
@@ -353,6 +357,7 @@ fn validate_result_filename(filename: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Запрещает traversal и управляющие символы в сегменте файлового пути.
 fn validate_path_segment(value: &str, kind: &'static str) -> Result<(), AppError> {
     if value.is_empty()
         || matches!(value, "." | "..")
@@ -366,6 +371,7 @@ fn validate_path_segment(value: &str, kind: &'static str) -> Result<(), AppError
     }
 }
 
+/// Добавляет путь и операцию к ошибке файлового хранилища.
 fn storage_error(operation: &'static str, path: &Path, source: std::io::Error) -> ResultError {
     ResultError::Storage {
         operation,
@@ -379,7 +385,7 @@ mod tests {
     use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
     use crate::{
-        config::{LdapConfig, ResultConfig},
+        config::{KerberosConfig, LdapConfig, ResultConfig},
         entities::import::{Group, PreparedIdentity, SecretString, StudentInput},
     };
 
@@ -412,10 +418,14 @@ mod tests {
             session_ttl: Duration::from_secs(60),
             ldap: LdapConfig {
                 url: "ldap://ldap.test".to_owned(),
-                user_bind_domain: "MAIN".to_owned(),
+                gssapi_host: "ldap.test".to_owned(),
                 auth_search_base_dn: "DC=main,DC=sgu,DC=ru".to_owned(),
                 users_container_dn: "OU=Users,DC=main,DC=sgu,DC=ru".to_owned(),
                 csit_admins_group_dn: "CN=Admins,DC=main,DC=sgu,DC=ru".to_owned(),
+            },
+            kerberos: KerberosConfig {
+                realm: "MAIN.SGU.RU".to_owned(),
+                ccache_dir: directory.0.join("krb5"),
             },
             results: ResultConfig {
                 output_dir: directory.0.clone(),
@@ -448,8 +458,7 @@ mod tests {
     async fn creates_reads_and_lists_result_under_ldap_identifier() {
         let directory = TestDirectory::new();
         let service = service(&directory);
-        let credentials =
-            LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
+        let credentials = KerberosCredentials::for_tests("gadzhiev-mamedovar");
 
         let stored = service
             .create(&credentials, &[prepared_student()])
@@ -485,7 +494,7 @@ mod tests {
     async fn rejects_unsafe_owner_without_creating_external_path() {
         let directory = TestDirectory::new();
         let service = service(&directory);
-        let credentials = LdapCredentials::new("../admin".to_owned(), "password".to_owned());
+        let credentials = KerberosCredentials::for_tests("../admin");
 
         let error = service
             .create(&credentials, &[prepared_student()])
@@ -514,8 +523,7 @@ mod tests {
     async fn deletes_selected_result_and_empty_owner_directory() {
         let directory = TestDirectory::new();
         let service = service(&directory);
-        let credentials =
-            LdapCredentials::new("gadzhiev-mamedovar".to_owned(), "password".to_owned());
+        let credentials = KerberosCredentials::for_tests("gadzhiev-mamedovar");
         let stored = service
             .create(&credentials, &[prepared_student()])
             .await

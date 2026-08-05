@@ -2,6 +2,7 @@
 
 pub(crate) mod import;
 pub(crate) mod jobs;
+pub(crate) mod kerberos;
 pub(crate) mod ldap;
 pub(crate) mod results;
 pub(crate) mod sessions;

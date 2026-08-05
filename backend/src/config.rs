@@ -16,6 +16,8 @@ pub(crate) struct Config {
     pub(crate) session_ttl: Duration,
     /// Параметры подключения и целевой контейнер LDAP.
     pub(crate) ldap: LdapConfig,
+    /// Параметры пользовательских Kerberos credentials.
+    pub(crate) kerberos: KerberosConfig,
     /// Расположение итоговых CSV-файлов.
     pub(crate) results: ResultConfig,
     /// Серверная соль для вычисления временных паролей студентов.
@@ -47,6 +49,7 @@ impl Config {
             cookie_secure: parse_or("COOKIE_SECURE", true, "true или false")?,
             session_ttl: duration_or("SESSION_TTL_SECONDS", DEFAULT_SESSION_TTL_SECONDS)?,
             ldap: LdapConfig::load()?,
+            kerberos: KerberosConfig::load()?,
             results: ResultConfig::load()?,
             salt: required_secret("PASSWORD_SALT")?,
         })
@@ -58,9 +61,9 @@ impl Config {
 pub(crate) struct LdapConfig {
     /// URL LDAP-сервера.
     pub(crate) url: String,
-    /// NetBIOS-имя домена для пользовательского bind в формате `DOMAIN\\identifier`.
-    pub(crate) user_bind_domain: String,
-    /// База поиска учётной записи после успешного пользовательского bind.
+    /// FQDN LDAP-сервера, из которого GSSAPI строит SPN `ldap/<fqdn>`.
+    pub(crate) gssapi_host: String,
+    /// База поиска учётной записи после успешной пользовательской аутентификации.
     pub(crate) auth_search_base_dn: String,
     /// Distinguished Name контейнера, в котором создаются учётные записи студентов.
     pub(crate) users_container_dn: String,
@@ -74,13 +77,34 @@ impl LdapConfig {
         let url = required("LDAP_URL")?;
 
         validate_url("LDAP_URL", &url, &["ldap"], "URL со схемой ldap://")?;
+        let gssapi_host = required("LDAP_GSSAPI_HOST")?;
+        validate_gssapi_host(&gssapi_host, &url)?;
 
         Ok(Self {
             url,
-            user_bind_domain: required("LDAP_USER_BIND_DOMAIN")?,
+            gssapi_host,
             auth_search_base_dn: required("LDAP_AUTH_SEARCH_BASE_DN")?,
             users_container_dn: required("LDAP_USERS_CONTAINER_DN")?,
             csit_admins_group_dn: required("LDAP_CSIT_ADMINS_GROUP_DN")?,
+        })
+    }
+}
+
+/// Настройки Kerberos realm и изолированного хранения session credentials.
+#[derive(Clone, Debug)]
+pub(crate) struct KerberosConfig {
+    /// Kerberos realm, добавляемый к нормализованному identifier администратора.
+    pub(crate) realm: String,
+    /// Закрытый каталог персональных FILE ccache.
+    pub(crate) ccache_dir: PathBuf,
+}
+
+impl KerberosConfig {
+    /// Читает обязательные настройки Kerberos.
+    fn load() -> Result<Self, ConfigError> {
+        Ok(Self {
+            realm: required("KERBEROS_REALM")?,
+            ccache_dir: PathBuf::from(required("KERBEROS_CCACHE_DIR")?),
         })
     }
 }
@@ -161,6 +185,36 @@ fn duration_or(name: &'static str, default_seconds: u64) -> Result<Duration, Con
     Ok(Duration::from_secs(seconds))
 }
 
+/// Проверяет, что GSSAPI получает FQDN без схемы/порта и тот же host указан в LDAP URL.
+fn validate_gssapi_host(host: &str, ldap_url: &str) -> Result<(), ConfigError> {
+    let expected = "FQDN без схемы и порта, совпадающий с host в LDAP_URL";
+    let authority =
+        host.parse::<http::uri::Authority>()
+            .map_err(|_| ConfigError::InvalidValue {
+                name: "LDAP_GSSAPI_HOST",
+                value: host.to_owned(),
+                expected,
+            })?;
+    let is_fqdn = authority.port().is_none()
+        && authority.host().contains('.')
+        && authority.host().parse::<std::net::IpAddr>().is_err();
+    let url_host_matches = ldap_url
+        .parse::<http::Uri>()
+        .ok()
+        .and_then(|uri| uri.host().map(str::to_owned))
+        .is_some_and(|url_host| url_host.eq_ignore_ascii_case(authority.host()));
+
+    if is_fqdn && url_host_matches {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidValue {
+            name: "LDAP_GSSAPI_HOST",
+            value: host.to_owned(),
+            expected,
+        })
+    }
+}
+
 /// Проверяет схему и наличие адресной части URL.
 fn validate_url(
     name: &'static str,
@@ -206,17 +260,19 @@ mod tests {
         "COOKIE_SECURE",
         "SESSION_TTL_SECONDS",
         "LDAP_URL",
-        "LDAP_USER_BIND_DOMAIN",
+        "LDAP_GSSAPI_HOST",
         "LDAP_AUTH_SEARCH_BASE_DN",
         "LDAP_USERS_CONTAINER_DN",
         "LDAP_CSIT_ADMINS_GROUP_DN",
+        "KERBEROS_REALM",
+        "KERBEROS_CCACHE_DIR",
         "RESULT_OUTPUT_DIR",
         "PASSWORD_SALT",
     ];
 
     const REQUIRED_VARIABLES: &[(&str, &str)] = &[
-        ("LDAP_URL", "ldap://ldap.test"),
-        ("LDAP_USER_BIND_DOMAIN", "MAIN"),
+        ("LDAP_URL", "ldap://ldap.test:389"),
+        ("LDAP_GSSAPI_HOST", "ldap.test"),
         ("LDAP_AUTH_SEARCH_BASE_DN", "DC=main,DC=sgu,DC=ru"),
         (
             "LDAP_USERS_CONTAINER_DN",
@@ -226,6 +282,8 @@ mod tests {
             "LDAP_CSIT_ADMINS_GROUP_DN",
             "CN=csit_admins,OU=groups,DC=main,DC=sgu,DC=ru",
         ),
+        ("KERBEROS_REALM", "MAIN.SGU.RU"),
+        ("KERBEROS_CCACHE_DIR", "/run/ad-provisioner/krb5"),
         ("PASSWORD_SALT", "password-salt"),
     ];
 
@@ -301,8 +359,8 @@ mod tests {
         assert_eq!(config.listen_addr, SocketAddr::from(([0, 0, 0, 0], 9000)));
         assert!(!config.cookie_secure);
         assert_eq!(config.session_ttl, Duration::from_secs(1800));
-        assert_eq!(config.ldap.url, "ldap://ldap.test");
-        assert_eq!(config.ldap.user_bind_domain, "MAIN");
+        assert_eq!(config.ldap.url, "ldap://ldap.test:389");
+        assert_eq!(config.ldap.gssapi_host, "ldap.test");
         assert_eq!(config.ldap.auth_search_base_dn, "DC=main,DC=sgu,DC=ru");
         assert_eq!(
             config.ldap.users_container_dn,
@@ -315,6 +373,11 @@ mod tests {
         assert_eq!(
             config.results.output_dir,
             PathBuf::from("/tmp/sgu-priemka-results")
+        );
+        assert_eq!(config.kerberos.realm, "MAIN.SGU.RU");
+        assert_eq!(
+            config.kerberos.ccache_dir,
+            PathBuf::from("/run/ad-provisioner/krb5")
         );
         assert_eq!(config.salt, " password salt ");
     }
@@ -383,5 +446,21 @@ mod tests {
                 } if error_name == name
             ));
         }
+    }
+
+    #[test]
+    fn rejects_gssapi_host_that_does_not_match_ldap_url() {
+        let _lock = lock_environment();
+        let _environment = TestEnvironment::new(&[("LDAP_GSSAPI_HOST", "other.test")]);
+
+        let error = config_error(Config::from_env());
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidValue {
+                name: "LDAP_GSSAPI_HOST",
+                ..
+            }
+        ));
     }
 }
