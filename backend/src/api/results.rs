@@ -3,19 +3,33 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::Serialize;
 use time::format_description::well_known::Rfc3339;
 
-use crate::{api::extractors::AuthenticatedUser, errors::AppError, state::AppState};
+use crate::{
+    api::extractors::AuthenticatedUser,
+    entities::{
+        import::ImportContext,
+        job::{JobStage, JobStatus},
+    },
+    errors::AppError,
+    state::AppState,
+};
 
 /// Объявляет маршруты просмотра и скачивания результатов без подключения состояния.
 pub(super) fn routes() -> Router<AppState> {
-    Router::new().route("/results", get(list_results)).route(
-        "/results/{owner}/{filename}",
-        get(download_result).delete(delete_result),
-    )
+    Router::new()
+        .route("/results", get(list_results))
+        .route(
+            "/results/{owner}/{filename}",
+            get(download_result).delete(delete_result),
+        )
+        .route(
+            "/results/{owner}/{filename}/create-accounts",
+            post(create_accounts),
+        )
 }
 
 /// Метаданные одного сформированного CSV для истории результатов.
@@ -36,6 +50,13 @@ struct ResultItem {
 struct ResultListResponse {
     /// Все сформированные результаты, доступные пользователю.
     items: Vec<ResultItem>,
+}
+
+/// Идентификатор задачи создания LDAP-аккаунтов из готового результата.
+#[derive(Debug, Serialize)]
+struct CreateAccountsResponse {
+    /// Идентификатор задачи для подписки на существующий import WebSocket.
+    job_id: String,
 }
 
 /// Возвращает список сформированных CSV, доступных аутентифицированному пользователю.
@@ -91,4 +112,50 @@ async fn delete_result(
 ) -> Result<StatusCode, AppError> {
     state.results.delete(&owner, &filename).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Запускает создание LDAP-аккаунтов из уже сохранённого CSV-результата.
+async fn create_accounts(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+    Path((owner, filename)): Path<(String, String)>,
+) -> Result<(StatusCode, Json<CreateAccountsResponse>), AppError> {
+    // Проверяем существование результата до создания job, чтобы не запускать
+    // задачу, которая сразу завершится с NotFound.
+    state.results.read(&owner, &filename).await?;
+    let job_id = state
+        .jobs
+        .create(
+            user.username.clone(),
+            JobStatus::Progress {
+                stage: JobStage::Parsing,
+                current: 0,
+                total: 0,
+            },
+        )
+        .await?;
+    let context = ImportContext {
+        job_id: job_id.clone(),
+        username: user.username,
+        kerberos_credentials: user.kerberos_credentials,
+        original_filename: filename.clone(),
+    };
+    let imports = state.imports.clone();
+    let job_id_for_task = job_id.clone();
+    let filename_for_task = filename.clone();
+    let result_owner = owner.clone();
+    tokio::spawn(async move {
+        if let Err(error) = imports
+            .run_result(context, result_owner, filename_for_task)
+            .await
+        {
+            tracing::error!(job_id = %job_id_for_task, %error, "stored-result LDAP creation stopped unexpectedly");
+        }
+    });
+
+    tracing::info!(%job_id, %owner, %filename, "LDAP creation from stored result accepted");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(CreateAccountsResponse { job_id }),
+    ))
 }

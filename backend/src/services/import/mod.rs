@@ -18,13 +18,13 @@ use crate::{
         import::{ImportContext, PreparedIdentity, PreparedStudent},
         job::{JobStage, JobStatus, LoginConflict, LoginResolution, ResultReference},
     },
-    errors::{AppError, ImportError},
+    errors::{AppError, ImportError, LdapError},
     services::{jobs::JobService, ldap::LdapService, results::ResultService},
 };
 
 use self::{
     credentials::{generate_password, normalize_conflict_login},
-    parser::parse_csv,
+    parser::{parse_csv, parse_result_csv},
     validation::{find_login_collisions, validate_students},
 };
 
@@ -33,6 +33,29 @@ const LOGIN_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 enum LoginResolutionResult {
     Resolved(Vec<LoginResolution>),
     TimedOut(JobStatus),
+}
+
+/// Формирует ФИО студента в порядке, используемом LDAP DN и статусом job.
+fn student_full_name(student: &PreparedStudent) -> String {
+    let source = &student.identity.source;
+    format!(
+        "{} {} {}",
+        source.last_name.trim(),
+        source.first_name.trim(),
+        source.patronymic.trim()
+    )
+}
+
+/// Возвращает безопасные сведения о частично выполненной LDAP-операции.
+fn ldap_failure_details(error: &LdapError) -> (String, bool) {
+    match error {
+        LdapError::Operation {
+            phase,
+            possibly_created,
+            ..
+        } => (format!("{phase:?}"), *possibly_created),
+        _ => ("Unknown".to_owned(), false),
+    }
 }
 
 enum PipelineStage<T> {
@@ -137,6 +160,160 @@ impl ImportService {
             username = %context.username,
             prepared_students = total,
             "import pipeline completed with validated account preparation; LDAP account creation is pending"
+        );
+        Ok(status)
+    }
+
+    /// Запускает LDAP-создание по уже сохранённому итоговому CSV.
+    pub(crate) async fn run_result(
+        &self,
+        context: ImportContext,
+        result_owner: String,
+        result_filename: String,
+    ) -> Result<JobStatus, AppError> {
+        tracing::info!(
+            job_id = %context.job_id,
+            result_owner = %result_owner,
+            result_filename = %result_filename,
+            "LDAP creation from stored result started"
+        );
+        let mut students = match self
+            .load_result_students(&context, &result_owner, &result_filename)
+            .await?
+        {
+            PipelineStage::Continue(students) => students,
+            PipelineStage::Finished(status) => return Ok(status),
+        };
+        let total = students.len();
+        let _creation_lock = self.lock.acquire().await.map_err(|_| AppError::Internal)?;
+
+        let mut identities = students
+            .iter()
+            .map(|student| student.identity.clone())
+            .collect::<Vec<_>>();
+        if let Some(status) = self
+            .resolve_csv_login_conflicts(&context.job_id, &mut identities)
+            .await?
+        {
+            return Ok(status);
+        }
+        match self.check_ldap(&context, &mut identities, total).await? {
+            PipelineStage::Continue(updated) => {
+                for (student, identity) in students.iter_mut().zip(updated) {
+                    student.identity = identity;
+                }
+            }
+            PipelineStage::Finished(status) => return Ok(status),
+        }
+
+        self.create_accounts(
+            &context,
+            &students,
+            total,
+            ResultReference {
+                owner: result_owner,
+                filename: result_filename,
+            },
+        )
+        .await
+    }
+
+    /// Загружает и разбирает сохранённый CSV перед LDAP-созданием.
+    async fn load_result_students(
+        &self,
+        context: &ImportContext,
+        owner: &str,
+        filename: &str,
+    ) -> Result<PipelineStage<Vec<PreparedStudent>>, AppError> {
+        self.publish_progress(&context.job_id, JobStage::Parsing, 0, 0)
+            .await?;
+        let bytes = self.results.read(owner, filename).await?;
+        let parsing = tokio::task::spawn_blocking(move || parse_result_csv(&bytes)).await;
+        let students = match parsing {
+            Ok(Ok(students)) => students,
+            Ok(Err(error)) => {
+                return Ok(PipelineStage::Finished(
+                    self.finish_import_error(&context.job_id, error).await?,
+                ));
+            }
+            Err(error) => {
+                tracing::error!(job_id = %context.job_id, %error, "stored result parsing task failed");
+                return Ok(PipelineStage::Finished(
+                    self.finish_internal_failure(
+                        &context.job_id,
+                        JobStage::Parsing,
+                        "stored result parsing task failed",
+                    )
+                    .await?,
+                ));
+            }
+        };
+        self.publish_progress(
+            &context.job_id,
+            JobStage::Parsing,
+            students.len(),
+            students.len(),
+        )
+        .await?;
+        Ok(PipelineStage::Continue(students))
+    }
+
+    /// Последовательно создаёт студентов из результата и публикует частичный статус при сбое.
+    async fn create_accounts(
+        &self,
+        context: &ImportContext,
+        students: &[PreparedStudent],
+        total: usize,
+        result: ResultReference,
+    ) -> Result<JobStatus, AppError> {
+        self.publish_progress(&context.job_id, JobStage::CreatingAccounts, 0, total)
+            .await?;
+        for (index, student) in students.iter().enumerate() {
+            if let Err(error) = self
+                .ldap
+                .create_user(&context.kerberos_credentials, student)
+                .await
+            {
+                let (ldap_phase, possibly_created) = ldap_failure_details(&error);
+                let status = JobStatus::PartialFailure {
+                    created: index,
+                    total,
+                    failed_row: student.identity.source.source_row,
+                    failed_fio: student_full_name(student),
+                    ldap_phase,
+                    possibly_created,
+                    result,
+                };
+                tracing::warn!(
+                    job_id = %context.job_id,
+                    row = student.identity.source.source_row,
+                    login = %student.identity.login,
+                    error = ?error,
+                    "LDAP account creation stopped after partial progress"
+                );
+                self.jobs.publish(&context.job_id, status.clone()).await?;
+                return Ok(status);
+            }
+            self.publish_progress(
+                &context.job_id,
+                JobStage::CreatingAccounts,
+                index + 1,
+                total,
+            )
+            .await?;
+        }
+
+        let status = JobStatus::Completed {
+            created: students.len(),
+            total,
+            result,
+        };
+        self.jobs.publish(&context.job_id, status.clone()).await?;
+        tracing::info!(
+            job_id = %context.job_id,
+            username = %context.username,
+            created_students = students.len(),
+            "LDAP creation from stored result completed"
         );
         Ok(status)
     }
@@ -265,6 +442,7 @@ impl ImportService {
             .await?;
         Ok(PipelineStage::Continue(students))
     }
+
     /// Публикует промежуточный статус pipeline для подписчиков задачи.
     async fn publish_progress(
         &self,

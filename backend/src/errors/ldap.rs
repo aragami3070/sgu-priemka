@@ -10,6 +10,8 @@ pub(crate) enum LdapOperation {
     AuthorizeUser,
     /// Поиск существующего студента по `sAMAccountName`.
     SearchStudent,
+    /// Проверка или создание учебной LDAP-группы.
+    EnsureGroup,
 }
 
 /// Этап изменения LDAP, на котором могла частично создаться учётная запись.
@@ -21,6 +23,8 @@ pub(crate) enum LdapPhase {
     SetPassword,
     /// Включение учётной записи после установки пароля.
     EnableAccount,
+    /// Добавление созданной учётной записи в учебную группу.
+    AddToGroup,
 }
 
 /// Единая ошибка LDAP-аутентификации и операций с учётными записями.

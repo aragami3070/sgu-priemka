@@ -3,10 +3,24 @@ use std::borrow::Cow;
 use csv::{ReaderBuilder, StringRecord};
 use encoding_rs::WINDOWS_1251;
 
-use crate::{entities::import::StudentInput, errors::ImportError};
+use crate::{
+    entities::import::{Group, PreparedStudent, SecretString, StudentInput},
+    errors::ImportError,
+};
+
+use super::credentials::normalize_conflict_login;
 
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 const EXPECTED_HEADERS: [&str; 5] = ["First", "Last", "Patronymic", "Email", "Group"];
+const EXPECTED_RESULT_HEADERS: [&str; 7] = [
+    "First",
+    "Last",
+    "Patronymic",
+    "Email",
+    "Group",
+    "Login",
+    "Pass",
+];
 
 /// Декодирует UTF-8/Windows-1251 CSV и преобразует его строки в `StudentInput`.
 pub(super) fn parse_csv(bytes: &[u8]) -> Result<Vec<StudentInput>, ImportError> {
@@ -26,6 +40,36 @@ pub(super) fn parse_csv(bytes: &[u8]) -> Result<Vec<StudentInput>, ImportError> 
             let source_row = index + 2;
             let record = record.map_err(|error| parse_error(source_row, error))?;
             student_from_record(source_row, &record)
+        })
+        .collect()
+}
+
+/// Читает ранее сформированный CSV с credentials для запуска LDAP-создания.
+pub(super) fn parse_result_csv(bytes: &[u8]) -> Result<Vec<PreparedStudent>, ImportError> {
+    let decoded = decode_csv(bytes)?;
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .flexible(false)
+        .from_reader(decoded.as_bytes());
+    let headers = reader.headers().map_err(|error| parse_error(1, error))?;
+    if !headers.iter().eq(EXPECTED_RESULT_HEADERS) {
+        return Err(ImportError::Parse {
+            row: 1,
+            message: format!(
+                "expected header `{}`, got `{}`",
+                EXPECTED_RESULT_HEADERS.join(","),
+                headers.iter().collect::<Vec<_>>().join(",")
+            ),
+        });
+    }
+
+    reader
+        .records()
+        .enumerate()
+        .map(|(index, record)| {
+            let source_row = index + 2;
+            let record = record.map_err(|error| parse_error(source_row, error))?;
+            result_student_from_record(source_row, &record)
         })
         .collect()
 }
@@ -92,6 +136,58 @@ fn student_from_record(
         patronymic: field(2)?,
         email: field(3)?,
         group: field(4)?,
+    })
+}
+
+/// Преобразует строку итогового CSV в данные для LDAP-создания.
+fn result_student_from_record(
+    source_row: usize,
+    record: &StringRecord,
+) -> Result<PreparedStudent, ImportError> {
+    let field = |index: usize| {
+        record
+            .get(index)
+            .map(str::trim)
+            .map(str::to_owned)
+            .ok_or_else(|| ImportError::Parse {
+                row: source_row,
+                message: format!("missing column `{}`", EXPECTED_RESULT_HEADERS[index]),
+            })
+    };
+    let source = StudentInput {
+        source_row,
+        first_name: field(0)?,
+        last_name: field(1)?,
+        patronymic: field(2)?,
+        email: field(3)?,
+        group: field(4)?,
+    };
+    let group_number = source
+        .group
+        .parse::<usize>()
+        .map_err(|_| ImportError::Validation {
+            row: source_row,
+            message: "Номер группы должен быть целым положительным числом".to_owned(),
+        })?;
+    let group = Group::try_from(group_number).map_err(|source| ImportError::UnsupportedGroup {
+        row: source_row,
+        source,
+    })?;
+    let login = normalize_conflict_login(source_row, &field(5)?)?;
+    let password = field(6)?;
+    if password.is_empty() {
+        return Err(ImportError::Validation {
+            row: source_row,
+            message: "Пароль пустой".to_owned(),
+        });
+    }
+    Ok(PreparedStudent {
+        identity: crate::entities::import::PreparedIdentity {
+            source,
+            login,
+            group,
+        },
+        password: SecretString::new(password),
     })
 }
 
@@ -203,5 +299,21 @@ mod tests {
         let error = parse_csv(&[0x98]).expect_err("недекодируемые байты должны быть ошибкой");
 
         assert!(matches!(error, ImportError::Decode));
+    }
+
+    #[test]
+    fn parses_stored_result_for_ldap_creation() {
+        let csv = concat!(
+            "First,Last,Patronymic,Email,Group,Login,Pass\n",
+            "Иван,Иванов,Иванович,ivan@example.com,151,ivanovii,temporary-password\n",
+        );
+
+        let students = parse_result_csv(csv.as_bytes())
+            .expect("сохранённый результат должен быть пригоден для LDAP-создания");
+
+        assert_eq!(students.len(), 1);
+        assert_eq!(students[0].identity.login, "ivanovii");
+        assert_eq!(students[0].identity.group, Group::Pi);
+        assert_eq!(students[0].password.get(), "temporary-password");
     }
 }
