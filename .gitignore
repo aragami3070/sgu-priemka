@@ -1,3 +1,7 @@
 target/
 .env
+.dev-sessions.json
+.kerberos-cache/
 *summary.md
+output/
+test.csv
