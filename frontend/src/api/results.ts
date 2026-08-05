@@ -12,6 +12,10 @@ interface ResultListResponse {
   items: ResultItem[]
 }
 
+export interface CreateAccountsResponse {
+  job_id: string
+}
+
 function resultPath(result: Pick<ResultItem, 'owner' | 'filename'>): string {
   return `/results/${encodeURIComponent(result.owner)}/${encodeURIComponent(result.filename)}`
 }
@@ -37,6 +41,15 @@ export async function downloadResult(result: ResultItem): Promise<void> {
 
 export async function deleteResult(result: ResultItem): Promise<void> {
   await apiClient.delete(resultPath(result))
+}
+
+export async function createAccountsFromResult(
+  result: ResultItem,
+): Promise<CreateAccountsResponse> {
+  const response = await apiClient.post<CreateAccountsResponse>(
+    `${resultPath(result)}/create-accounts`,
+  )
+  return response.data
 }
 
 export function getResultErrorMessage(

@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Download,
   FileClock,
   RefreshCw,
   RotateCcw,
   Trash2,
+  UserPlus,
+  UserX,
 } from "lucide-react";
 import {
   Alert,
@@ -18,6 +20,7 @@ import {
   DialogContentText,
   DialogTitle,
   IconButton,
+  Snackbar,
   Table,
   TableBody,
   TableCell,
@@ -29,12 +32,16 @@ import {
   Typography,
 } from "@mui/material";
 import {
+  createAccountsFromResult,
   deleteResult,
   downloadResult,
   getResultErrorMessage,
   listResults,
 } from "../api/results";
 import type { ResultItem } from "../api/results";
+import { openImportEvents } from "../api/imports";
+import type { JobStatus } from "../api/imports";
+import { LoginConflictResolver } from "../components/LoginConflictResolver";
 
 function resultKey(result: ResultItem): string {
   return `${result.owner}/${result.filename}`;
@@ -66,6 +73,10 @@ export function ResultsPage() {
   const [deleteCandidate, setDeleteCandidate] = useState<ResultItem | null>(
     null,
   );
+  const [creatingKey, setCreatingKey] = useState<string | null>(null);
+  const [creationStatus, setCreationStatus] = useState<JobStatus | null>(null);
+  const [creationSuccess, setCreationSuccess] = useState<string | null>(null);
+  const creationSocketRef = useRef<WebSocket | null>(null);
 
   const loadResults = useCallback(async () => {
     setIsLoading(true);
@@ -87,6 +98,13 @@ export function ResultsPage() {
   useEffect(() => {
     void loadResults();
   }, [loadResults]);
+
+  useEffect(() => {
+    return () => {
+      creationSocketRef.current?.close();
+      creationSocketRef.current = null;
+    };
+  }, []);
 
   const filteredResults = useMemo(() => {
     const from = dateFrom ? new Date(`${dateFrom}T00:00:00`) : null;
@@ -139,6 +157,79 @@ export function ResultsPage() {
       setDeletingKey(null);
     }
   };
+
+  const handleCreateAccounts = async (result: ResultItem) => {
+    const key = resultKey(result);
+    if (creatingKey) return;
+    setCreatingKey(key);
+    setCreationStatus(null);
+    setCreationSuccess(null);
+    setError(null);
+    creationSocketRef.current?.close();
+    try {
+      const { job_id: jobId } = await createAccountsFromResult(result);
+      const socket = openImportEvents(jobId);
+      creationSocketRef.current = socket;
+      let terminalReceived = false;
+      socket.onmessage = (event) => {
+        try {
+          const nextStatus = JSON.parse(String(event.data)) as JobStatus;
+          setCreationStatus(nextStatus);
+          if (
+            nextStatus.type === "completed" ||
+            nextStatus.type === "failed" ||
+            nextStatus.type === "partial_failure"
+          ) {
+            terminalReceived = true;
+            setCreatingKey(null);
+            if (nextStatus.type === "completed") {
+              const count = nextStatus.created;
+              setCreationSuccess(
+                `Пользователи успешно созданы: ${count} ${
+                  count === 1
+                    ? "учётная запись"
+                    : count >= 2 && count <= 4
+                      ? "учётные записи"
+                      : "учётных записей"
+                }.`,
+              );
+            }
+            if (nextStatus.type === "failed") setError(nextStatus.message);
+            if (nextStatus.type === "partial_failure") {
+              setError(
+                `Создание остановлено на строке ${nextStatus.failed_row}.`,
+              );
+            }
+          }
+        } catch {
+          setError("Backend прислал некорректный статус задания.");
+          socket.close();
+        }
+      };
+      socket.onclose = () => {
+        if (!terminalReceived) {
+          setError("Связь с задачей создания пользователей потеряна.");
+          setCreatingKey(null);
+        }
+        if (creationSocketRef.current === socket) {
+          creationSocketRef.current = null;
+        }
+      };
+    } catch (requestError) {
+      setError(
+        getResultErrorMessage(
+          requestError,
+          "Не удалось запустить создание пользователей.",
+        ),
+      );
+      setCreatingKey(null);
+    }
+  };
+
+  const creationConflictStatus =
+    creationStatus?.type === "awaiting_login_resolutions"
+      ? creationStatus
+      : null;
 
   return (
     <Box className="page-section">
@@ -243,6 +334,7 @@ export function ResultsPage() {
                 const key = resultKey(result);
                 const isDownloading = downloadingKey === key;
                 const isDeleting = deletingKey === key;
+                const isCreating = creatingKey === key;
                 return (
                   <TableRow key={key} hover>
                     <TableCell>{result.owner}</TableCell>
@@ -268,6 +360,33 @@ export function ResultsPage() {
                             </IconButton>
                           </span>
                         </Tooltip>
+                        <Tooltip title="Создать пользователей в LDAP">
+                          <span>
+                            <IconButton
+                              color="primary"
+                              aria-label={`Создать пользователей из ${result.filename}`}
+                              disabled={isDownloading || isDeleting || creatingKey !== null}
+                              onClick={() => void handleCreateAccounts(result)}
+                            >
+                              {isCreating ? (
+                                <CircularProgress size={19} />
+                              ) : (
+                                <UserPlus size={19} />
+                              )}
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="Удалить пользователей (скоро)">
+                          <span>
+                            <IconButton
+                              color="warning"
+                              aria-label={`Удалить пользователей из ${result.filename}`}
+                              disabled
+                            >
+                              <UserX size={19} />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
                         <Tooltip title="Удалить CSV">
                           <span>
                             <IconButton
@@ -289,6 +408,14 @@ export function ResultsPage() {
           </TableBody>
         </Table>
       </TableContainer>
+
+      {creationConflictStatus && (
+        <LoginConflictResolver
+          conflicts={creationConflictStatus.conflicts}
+          socket={creationSocketRef.current}
+          onError={setError}
+        />
+      )}
 
       <Dialog
         open={deleteCandidate !== null}
@@ -322,6 +449,21 @@ export function ResultsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <Snackbar
+        open={creationSuccess !== null}
+        autoHideDuration={6000}
+        onClose={() => setCreationSuccess(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setCreationSuccess(null)}
+        >
+          {creationSuccess}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }

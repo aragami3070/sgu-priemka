@@ -12,16 +12,8 @@ import {
   Divider,
   IconButton,
   LinearProgress,
-  Paper,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   Tooltip,
-  TextField,
   Typography,
 } from "@mui/material";
 import {
@@ -29,9 +21,9 @@ import {
   getActiveImport,
   getImportErrorMessage,
   openImportEvents,
-  resolveLoginConflicts,
 } from "../api/imports";
 import type { JobStage, JobStatus } from "../api/imports";
+import { LoginConflictResolver } from "../components/LoginConflictResolver";
 
 const MAX_CSV_SIZE = 10 * 1024 * 1024;
 
@@ -56,13 +48,6 @@ export function ImportPage() {
   const [isJobDisconnected, setIsJobDisconnected] = useState(false);
   const [status, setStatus] = useState<JobStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [replacementLogins, setReplacementLogins] = useState<
-    Record<number, string>
-  >({});
-  const [resolutionErrors, setResolutionErrors] = useState<
-    Record<number, string>
-  >({});
-  const [isSendingResolution, setIsSendingResolution] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
 
   const attachToJob = useCallback((jobId: string) => {
@@ -79,18 +64,7 @@ export function ImportPage() {
         const nextStatus = JSON.parse(String(event.data)) as JobStatus;
         setStatus(nextStatus);
 
-        if (nextStatus.type === "awaiting_login_resolutions") {
-          setReplacementLogins(
-            Object.fromEntries(
-              nextStatus.conflicts.map((conflict) => [
-                conflict.row,
-                conflict.login,
-              ]),
-            ),
-          );
-          setResolutionErrors({});
-          setIsSendingResolution(false);
-        } else if (nextStatus.type === "completed") {
+        if (nextStatus.type === "completed") {
           terminalReceived = true;
           setActiveJobId(null);
           setIsProcessing(false);
@@ -197,43 +171,6 @@ export function ImportPage() {
   const conflictStatus =
     status?.type === "awaiting_login_resolutions" ? status : null;
 
-  const handleResolveConflicts = () => {
-    if (!conflictStatus || isSendingResolution) return;
-    const invalid = Object.fromEntries(
-      conflictStatus.conflicts
-        .filter(
-          (conflict) =>
-            !/^[A-Za-z0-9]+$/.test(
-              (replacementLogins[conflict.row] ?? "").trim(),
-            ),
-        )
-        .map((conflict) => [
-          conflict.row,
-          "Используйте только латинские буквы и цифры.",
-        ]),
-    );
-    if (Object.keys(invalid).length > 0) {
-      setResolutionErrors(invalid);
-      return;
-    }
-
-    const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      setError("Канал задания недоступен. Запустите импорт заново.");
-      return;
-    }
-
-    setResolutionErrors({});
-    setIsSendingResolution(true);
-    resolveLoginConflicts(
-      socket,
-      conflictStatus.conflicts.map((conflict) => ({
-        row: conflict.row,
-        login: replacementLogins[conflict.row].trim(),
-      })),
-    );
-  };
-
   const progress = status?.type === "progress" ? status : null;
   const progressValue =
     progress && progress.total > 0
@@ -288,65 +225,11 @@ export function ImportPage() {
             </Alert>
           )}
           {conflictStatus && (
-            <Box className="login-conflicts">
-              <Alert severity="warning">
-                <AlertTitle>Найдены конфликты логинов ({conflictStatus.conflicts.length})</AlertTitle>
-                Измените необходимые значения и отправьте всю таблицу на
-                повторную проверку.
-              </Alert>
-              <TableContainer component={Paper} variant="outlined">
-                <Table className="login-conflicts__table" size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Строка</TableCell>
-                      <TableCell>ФИО</TableCell>
-                      <TableCell>Login</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {conflictStatus.conflicts.map((conflict) => (
-                      <TableRow key={conflict.row}>
-                        <TableCell>{conflict.row}</TableCell>
-                        <TableCell>{conflict.full_name}</TableCell>
-                        <TableCell>
-                          <TextField
-                            fullWidth
-                            size="small"
-                            value={replacementLogins[conflict.row] ?? ""}
-                            error={resolutionErrors[conflict.row] !== undefined}
-                            helperText={
-                              resolutionErrors[conflict.row] ?? conflict.message
-                            }
-                            disabled={isSendingResolution}
-                            onChange={(event) => {
-                              const login = event.target.value;
-                              setReplacementLogins((current) => ({
-                                ...current,
-                                [conflict.row]: login,
-                              }));
-                              setResolutionErrors((current) => {
-                                const updated = { ...current };
-                                delete updated[conflict.row];
-                                return updated;
-                              });
-                            }}
-                          />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
-              <Box className="login-conflicts__actions">
-                <Button
-                  variant="contained"
-                  disabled={isSendingResolution}
-                  onClick={handleResolveConflicts}
-                >
-                  {isSendingResolution ? "Проверяем…" : "Проверить все логины"}
-                </Button>
-              </Box>
-            </Box>
+            <LoginConflictResolver
+              conflicts={conflictStatus.conflicts}
+              socket={socketRef.current}
+              onError={setError}
+            />
           )}
           {!conflictStatus && !activeJobId && (
             <>
