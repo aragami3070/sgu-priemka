@@ -68,6 +68,11 @@ impl Groups {
             .get(&number)
             .ok_or(UnsupportedGroupNumber(number))
     }
+
+    /// Возвращает количество загруженных групп.
+    pub(crate) fn len(&self) -> usize {
+        self.groups.len()
+    }
 }
 
 /// Проверенные данные, готовые к поиску конфликтов в LDAP и генерации пароля.

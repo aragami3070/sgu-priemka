@@ -21,7 +21,33 @@ impl GroupService {
             path: self.path.clone(),
             source,
         })?;
-        let value: toml::Value = toml::from_str(&text)?;
+        Self::parse_text(&text)
+    }
+
+    /// Проверяет новый TOML и атомарно заменяет текущий файл групп.
+    pub(crate) fn replace(&self, bytes: &[u8]) -> Result<Groups, GroupServiceError> {
+        let text = std::str::from_utf8(bytes).map_err(|_| GroupServiceError::InvalidUtf8)?;
+        let groups = Self::parse_text(text)?;
+        let temporary_path = self
+            .path
+            .with_extension(format!("toml-{}.tmp", uuid::Uuid::new_v4()));
+        fs::write(&temporary_path, bytes).map_err(|source| GroupServiceError::Read {
+            path: temporary_path.clone(),
+            source,
+        })?;
+        if let Err(source) = fs::rename(&temporary_path, &self.path) {
+            let _ = fs::remove_file(&temporary_path);
+            return Err(GroupServiceError::Read {
+                path: self.path.clone(),
+                source,
+            });
+        }
+        Ok(groups)
+    }
+
+    /// Разбирает TOML-текст в набор групп.
+    fn parse_text(text: &str) -> Result<Groups, GroupServiceError> {
+        let value: toml::Value = toml::from_str(text)?;
         let table = value
             .get("groups")
             .and_then(toml::Value::as_table)

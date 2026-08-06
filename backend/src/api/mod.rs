@@ -6,6 +6,8 @@ mod auth;
 mod cookies;
 /// Экстрактор аутентификации для защищённых методов.
 mod extractors;
+/// Загрузка и замена конфигурации учебных групп.
+mod groups;
 /// Методы загрузки CSV и отслеживания прогресса импорта.
 mod imports;
 /// Методы просмотра и скачивания сформированных результатов.
@@ -19,6 +21,7 @@ use crate::state::AppState;
 pub(crate) fn router(state: AppState) -> Router {
     let api = Router::new()
         .merge(auth::routes())
+        .merge(groups::routes())
         .merge(imports::routes())
         .merge(results::routes());
 
