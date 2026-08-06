@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{entities::auth::KerberosCredentials, errors::UnsupportedGroupNumber};
 
@@ -19,72 +19,54 @@ pub(crate) struct StudentInput {
     pub(crate) group: String,
 }
 
-/// Поддерживаемое направление обучения, определяемое номером группы из CSV.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Group {
-    /// Фундаментальная информатика и информационные технологии, номер 111.
-    Phiit,
-    /// Информатика и вычислительная техника, номер 121.
-    Ivt,
-    /// Компьютерная безопасность, номер 131.
-    Kb,
-    /// Математическое обеспечение и администрирование информационных систем, номер 141.
-    Moais,
-    /// Программная инженерия, номер 151.
-    Pi,
-    /// Педагогическое образование, номер 161.
-    Po,
-    /// Системный анализ и управление, номер 181.
-    Sau,
-}
-
-impl TryFrom<usize> for Group {
-    type Error = UnsupportedGroupNumber;
-
-    fn try_from(group_number: usize) -> Result<Self, Self::Error> {
-        match group_number {
-            111 => Ok(Self::Phiit),
-            121 => Ok(Self::Ivt),
-            131 => Ok(Self::Kb),
-            141 => Ok(Self::Moais),
-            151 => Ok(Self::Pi),
-            161 => Ok(Self::Po),
-            181 => Ok(Self::Sau),
-            _ => Err(UnsupportedGroupNumber(group_number)),
-        }
-    }
+/// Одно соответствие номера учебной группы и её названия для LDAP.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Group {
+    number: usize,
+    name: String,
 }
 
 impl Group {
-    /// Возвращает номер группы из входного CSV.
-    pub(crate) const fn number(self) -> usize {
-        match self {
-            Self::Phiit => 111,
-            Self::Ivt => 121,
-            Self::Kb => 131,
-            Self::Moais => 141,
-            Self::Pi => 151,
-            Self::Po => 161,
-            Self::Sau => 181,
-        }
+    /// Создаёт соответствие номера и названия группы.
+    pub(crate) fn new(number: usize, name: String) -> Self {
+        Self { number, name }
     }
 
-    /// Возвращает русское сокращение направления для имени LDAP-группы.
-    pub(crate) const fn russian_name(self) -> &'static str {
-        match self {
-            Self::Phiit => "ФИИТ",
-            Self::Ivt => "ИВТ",
-            Self::Kb => "КБ",
-            Self::Moais => "МОАИС",
-            Self::Pi => "ПИ",
-            Self::Po => "ПО",
-            Self::Sau => "САУ",
-        }
+    /// Возвращает номер группы.
+    #[cfg(test)]
+    pub(crate) const fn number(&self) -> usize {
+        self.number
     }
 
-    /// Формирует принятое в LDAP имя группы с одним пробелом перед годом.
-    pub(crate) fn ldap_name(self, year: i32) -> String {
-        format!("{} {year}", self.russian_name())
+    /// Возвращает название группы из TOML.
+    #[cfg(test)]
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Формирует имя LDAP-группы с текущим годом.
+    pub(crate) fn ldap_name(&self, year: i32) -> String {
+        format!("{} {year}", self.name)
+    }
+}
+
+/// Загруженный набор соответствий номеров и названий учебных групп.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Groups {
+    groups: HashMap<usize, Group>,
+}
+
+impl Groups {
+    /// Создаёт набор групп.
+    pub(crate) fn new(groups: HashMap<usize, Group>) -> Self {
+        Self { groups }
+    }
+
+    /// Ищет группу по номеру из CSV.
+    pub(crate) fn get(&self, number: usize) -> Result<&Group, UnsupportedGroupNumber> {
+        self.groups
+            .get(&number)
+            .ok_or(UnsupportedGroupNumber(number))
     }
 }
 
@@ -139,38 +121,22 @@ pub(crate) struct ImportContext {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     #[test]
-    fn maps_every_supported_number_to_expected_group() {
-        let cases = [
-            (111, Group::Phiit, "ФИИТ"),
-            (121, Group::Ivt, "ИВТ"),
-            (131, Group::Kb, "КБ"),
-            (141, Group::Moais, "МОАИС"),
-            (151, Group::Pi, "ПИ"),
-            (161, Group::Po, "ПО"),
-            (181, Group::Sau, "САУ"),
-        ];
-
-        for (number, expected, expected_name) in cases {
-            let group = Group::try_from(number).expect("номер должен поддерживаться");
-            assert_eq!(group, expected);
-            assert_eq!(group.number(), number);
-            assert_eq!(group.russian_name(), expected_name);
-        }
+    fn stores_group_number_and_name() {
+        let group = Group::new(151, "ПИ".to_owned());
+        assert_eq!(group.number(), 151);
+        assert_eq!(group.name(), "ПИ");
+        assert_eq!(group.ldap_name(2026), "ПИ 2026");
     }
 
     #[test]
-    fn rejects_unsupported_group_number() {
-        let error = Group::try_from(101).expect_err("номер не должен поддерживаться");
-
-        assert_eq!(error, UnsupportedGroupNumber(101));
-    }
-
-    #[test]
-    fn formats_ldap_name_with_exactly_one_space_before_year() {
-        assert_eq!(Group::Pi.ldap_name(2026), "ПИ 2026");
-        assert_eq!(Group::Phiit.ldap_name(2030), "ФИИТ 2030");
+    fn finds_group_by_number() {
+        let groups = Groups::new(HashMap::from([(151, Group::new(151, "ПИ".to_owned()))]));
+        assert_eq!(groups.get(151).expect("группа должна найтись").name(), "ПИ");
+        assert_eq!(groups.get(101), Err(UnsupportedGroupNumber(101)));
     }
 }

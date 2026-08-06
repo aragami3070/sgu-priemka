@@ -4,7 +4,7 @@ use csv::{ReaderBuilder, StringRecord};
 use encoding_rs::WINDOWS_1251;
 
 use crate::{
-    entities::import::{Group, PreparedStudent, SecretString, StudentInput},
+    entities::import::{Groups, PreparedStudent, SecretString, StudentInput},
     errors::ImportError,
 };
 
@@ -45,7 +45,10 @@ pub(super) fn parse_csv(bytes: &[u8]) -> Result<Vec<StudentInput>, ImportError> 
 }
 
 /// Читает ранее сформированный CSV с credentials для запуска LDAP-создания.
-pub(super) fn parse_result_csv(bytes: &[u8]) -> Result<Vec<PreparedStudent>, ImportError> {
+pub(super) fn parse_result_csv(
+    bytes: &[u8],
+    groups: &Groups,
+) -> Result<Vec<PreparedStudent>, ImportError> {
     let decoded = decode_csv(bytes)?;
     let mut reader = ReaderBuilder::new()
         .has_headers(true)
@@ -69,7 +72,7 @@ pub(super) fn parse_result_csv(bytes: &[u8]) -> Result<Vec<PreparedStudent>, Imp
         .map(|(index, record)| {
             let source_row = index + 2;
             let record = record.map_err(|error| parse_error(source_row, error))?;
-            result_student_from_record(source_row, &record)
+            result_student_from_record(source_row, &record, groups)
         })
         .collect()
 }
@@ -143,6 +146,7 @@ fn student_from_record(
 fn result_student_from_record(
     source_row: usize,
     record: &StringRecord,
+    groups: &Groups,
 ) -> Result<PreparedStudent, ImportError> {
     let field = |index: usize| {
         record
@@ -169,10 +173,12 @@ fn result_student_from_record(
             row: source_row,
             message: "Номер группы должен быть целым положительным числом".to_owned(),
         })?;
-    let group = Group::try_from(group_number).map_err(|source| ImportError::UnsupportedGroup {
-        row: source_row,
-        source,
-    })?;
+    let group = groups
+        .get(group_number)
+        .map_err(|source| ImportError::UnsupportedGroup {
+            row: source_row,
+            source,
+        })?;
     let login = normalize_conflict_login(source_row, &field(5)?)?;
     let password = field(6)?;
     if password.is_empty() {
@@ -185,7 +191,7 @@ fn result_student_from_record(
         identity: crate::entities::import::PreparedIdentity {
             source,
             login,
-            group,
+            group: group.clone(),
         },
         password: SecretString::new(password),
     })
@@ -206,7 +212,16 @@ fn parse_error(fallback_row: usize, error: csv::Error) -> ImportError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
+
+    fn groups() -> Groups {
+        Groups::new(HashMap::from([(
+            151,
+            crate::entities::import::Group::new(151, "ПИ".to_owned()),
+        )]))
+    }
 
     #[test]
     fn parses_utf8_csv_with_exact_headers() {
@@ -308,12 +323,12 @@ mod tests {
             "Иван,Иванов,Иванович,ivan@example.com,151,ivanovii,temporary-password\n",
         );
 
-        let students = parse_result_csv(csv.as_bytes())
+        let students = parse_result_csv(csv.as_bytes(), &groups())
             .expect("сохранённый результат должен быть пригоден для LDAP-создания");
 
         assert_eq!(students.len(), 1);
         assert_eq!(students[0].identity.login, "ivanovii");
-        assert_eq!(students[0].identity.group, Group::Pi);
+        assert_eq!(students[0].identity.group.name(), "ПИ");
         assert_eq!(students[0].password.get(), "temporary-password");
     }
 }

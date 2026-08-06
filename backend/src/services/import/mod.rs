@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use crate::{
     config::Config,
     entities::{
-        import::{ImportContext, PreparedIdentity, PreparedStudent},
+        import::{Groups, ImportContext, PreparedIdentity, PreparedStudent},
         job::{JobStage, JobStatus, LoginConflict, LoginResolution, ResultReference},
     },
     errors::{AppError, ImportError, LdapError},
@@ -177,8 +177,15 @@ impl ImportService {
             result_filename = %result_filename,
             "начато создание учётных записей LDAP из сохранённого результата"
         );
+        let groups = match self
+            .reload_groups(&context.job_id, JobStage::Parsing)
+            .await?
+        {
+            PipelineStage::Continue(groups) => groups,
+            PipelineStage::Finished(status) => return Ok(status),
+        };
         let mut students = match self
-            .load_result_students(&context, &result_owner, &result_filename)
+            .load_result_students(&context, &result_owner, &result_filename, groups)
             .await?
         {
             PipelineStage::Continue(students) => students,
@@ -231,8 +238,15 @@ impl ImportService {
             result_filename = %result_filename,
             "начато удаление учётных записей LDAP из сохранённого результата"
         );
+        let groups = match self
+            .reload_groups(&context.job_id, JobStage::Parsing)
+            .await?
+        {
+            PipelineStage::Continue(groups) => groups,
+            PipelineStage::Finished(status) => return Ok(status),
+        };
         let students = match self
-            .load_result_students(&context, &result_owner, &result_filename)
+            .load_result_students(&context, &result_owner, &result_filename, groups)
             .await?
         {
             PipelineStage::Continue(students) => students,
@@ -258,11 +272,12 @@ impl ImportService {
         context: &ImportContext,
         owner: &str,
         filename: &str,
+        groups: Groups,
     ) -> Result<PipelineStage<Vec<PreparedStudent>>, AppError> {
         self.publish_progress(&context.job_id, JobStage::Parsing, 0, 0)
             .await?;
         let bytes = self.results.read(owner, filename).await?;
-        let parsing = tokio::task::spawn_blocking(move || parse_result_csv(&bytes)).await;
+        let parsing = tokio::task::spawn_blocking(move || parse_result_csv(&bytes, &groups)).await;
         let students = match parsing {
             Ok(Ok(students)) => students,
             Ok(Err(error)) => {
@@ -290,6 +305,24 @@ impl ImportService {
         )
         .await?;
         Ok(PipelineStage::Continue(students))
+    }
+
+    /// Перечитывает TOML с группами и превращает ошибку чтения в терминальный статус job.
+    async fn reload_groups(
+        &self,
+        job_id: &str,
+        stage: JobStage,
+    ) -> Result<PipelineStage<Groups>, AppError> {
+        match self.config.groups.reload() {
+            Ok(groups) => Ok(PipelineStage::Continue(groups)),
+            Err(error) => {
+                tracing::error!(%job_id, %error, "не удалось перечитать файл групп");
+                Ok(PipelineStage::Finished(
+                    self.finish_internal_failure(job_id, stage, "не удалось перечитать файл групп")
+                        .await?,
+                ))
+            }
+        }
     }
 
     /// Последовательно создаёт студентов из результата и публикует частичный статус при сбое.
@@ -442,7 +475,15 @@ impl ImportService {
         self.publish_progress(&context.job_id, JobStage::Validating, 0, total)
             .await?;
 
-        let validation = tokio::task::spawn_blocking(move || validate_students(students)).await;
+        let groups = match self
+            .reload_groups(&context.job_id, JobStage::Validating)
+            .await?
+        {
+            PipelineStage::Continue(groups) => groups,
+            PipelineStage::Finished(status) => return Ok(PipelineStage::Finished(status)),
+        };
+        let validation =
+            tokio::task::spawn_blocking(move || validate_students(students, &groups)).await;
         let mut identities = match validation {
             Ok(Ok(identities)) => identities,
             Ok(Err(error)) => {

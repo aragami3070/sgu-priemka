@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    entities::import::{Group, PreparedIdentity, StudentInput},
+    entities::import::{Groups, PreparedIdentity, StudentInput},
     errors::ImportError,
 };
 
@@ -12,6 +12,7 @@ use super::credentials::generate_login;
 /// Проверка конфликтов в входной CSV.
 pub(super) fn validate_students(
     students: Vec<StudentInput>,
+    groups: &Groups,
 ) -> Result<Vec<PreparedIdentity>, ImportError> {
     let mut full_names = HashSet::with_capacity(students.len());
     let mut prepared = Vec::with_capacity(students.len());
@@ -26,10 +27,13 @@ pub(super) fn validate_students(
                 message: "Номер группы должен быть целым положительным числом".to_owned(),
             })?;
         let group =
-            Group::try_from(group_number).map_err(|source| ImportError::UnsupportedGroup {
-                row: student.source_row,
-                source,
-            })?;
+            groups
+                .get(group_number)
+                .cloned()
+                .map_err(|source| ImportError::UnsupportedGroup {
+                    row: student.source_row,
+                    source,
+                })?;
 
         let full_name = format!(
             "{} {} {}",
@@ -71,7 +75,9 @@ pub(super) fn find_login_collisions(identities: &[PreparedIdentity]) -> Vec<usiz
 
 #[cfg(test)]
 mod tests {
-    use crate::errors::UnsupportedGroupNumber;
+    use std::collections::HashMap;
+
+    use crate::{entities::import::Group, errors::UnsupportedGroupNumber};
 
     use super::*;
 
@@ -91,6 +97,10 @@ mod tests {
         }
     }
 
+    fn groups() -> Groups {
+        Groups::new(HashMap::from([(151, Group::new(151, "ПИ".to_owned()))]))
+    }
+
     #[test]
     fn prepares_students_and_preserves_source_data() {
         let students = vec![
@@ -98,21 +108,21 @@ mod tests {
             student(3, "Пётр", "Петров", "Петрович"),
         ];
 
-        let prepared = validate_students(students.clone())
+        let prepared = validate_students(students.clone(), &groups())
             .expect("корректные студенты должны пройти валидацию");
 
         assert_eq!(prepared.len(), 2);
         assert_eq!(prepared[0].source, students[0]);
         assert_eq!(prepared[0].login, "ivanovii");
-        assert_eq!(prepared[0].group, Group::Pi);
+        assert_eq!(prepared[0].group.name(), "ПИ");
         assert_eq!(prepared[1].source, students[1]);
         assert_eq!(prepared[1].login, "petrovpp");
-        assert_eq!(prepared[1].group, Group::Pi);
+        assert_eq!(prepared[1].group.name(), "ПИ");
     }
 
     #[test]
     fn accepts_empty_input() {
-        let prepared = validate_students(Vec::new())
+        let prepared = validate_students(Vec::new(), &groups())
             .expect("отсутствие записей не является ошибкой этого этапа");
 
         assert!(prepared.is_empty());
@@ -123,7 +133,7 @@ mod tests {
         let mut invalid = student(17, "   ", "Иванов", "Иванович");
         invalid.email.clear();
 
-        let error = validate_students(vec![invalid])
+        let error = validate_students(vec![invalid], &groups())
             .expect_err("пустое обязательное поле ФИО должно вернуть ошибку");
 
         assert!(matches!(
@@ -137,7 +147,7 @@ mod tests {
         let first = student(2, "Иван", "Иванов", "Иванович");
         let second = student(9, "иван", "иванов", "иванович");
 
-        let error = validate_students(vec![first, second])
+        let error = validate_students(vec![first, second], &groups())
             .expect_err("одинаковые cn внутри файла должны конфликтовать");
 
         assert!(matches!(
@@ -151,7 +161,7 @@ mod tests {
         let first = student(2, "Иван", "Иванов", "Иванович");
         let second = student(11, "Игорь", "Иванов", "Ильич");
 
-        let prepared = validate_students(vec![first, second])
+        let prepared = validate_students(vec![first, second], &groups())
             .expect("исправляемый конфликт логинов не должен останавливать валидацию");
 
         assert_eq!(find_login_collisions(&prepared), vec![0, 1]);
@@ -164,7 +174,7 @@ mod tests {
         let mut valid = student(2, "Аслан-Джан", "Гаджиев-Мамедов'", "Рашидович");
         valid.email.clear();
 
-        let prepared = validate_students(vec![valid])
+        let prepared = validate_students(vec![valid], &groups())
             .expect("ФИО с разделителями и поддерживаемая группа должны пройти проверку");
 
         assert_eq!(prepared[0].login, "gadzhievmamedovar");
@@ -176,11 +186,11 @@ mod tests {
         let mut valid = student(4, "Иван", "Иванов", "Иванович");
         valid.group = "00151".to_owned();
 
-        let prepared = validate_students(vec![valid])
+        let prepared = validate_students(vec![valid], &groups())
             .expect("ведущие нули не должны менять номер направления");
 
         assert_eq!(prepared[0].source.group, "00151");
-        assert_eq!(prepared[0].group, Group::Pi);
+        assert_eq!(prepared[0].group.name(), "ПИ");
     }
 
     #[test]
@@ -188,7 +198,7 @@ mod tests {
         let mut invalid = student(27, "Иван", "Иванов", "Иванович");
         invalid.group = "ПИ".to_owned();
 
-        let error = validate_students(vec![invalid])
+        let error = validate_students(vec![invalid], &groups())
             .expect_err("текстовое название группы не должно приниматься");
 
         assert!(matches!(
@@ -203,7 +213,7 @@ mod tests {
         let mut invalid = student(31, "Иван", "Иванов", "Иванович");
         invalid.group = "101".to_owned();
 
-        let error = validate_students(vec![invalid])
+        let error = validate_students(vec![invalid], &groups())
             .expect_err("неподдерживаемая группа должна вернуть отдельную ошибку");
 
         assert!(matches!(

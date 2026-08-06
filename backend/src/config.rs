@@ -1,9 +1,11 @@
 use std::{env, net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
 use crate::errors::ConfigError;
+use crate::services::groups::GroupService;
 
 const DEFAULT_SESSION_TTL_SECONDS: u64 = 60 * 60;
 const DEFAULT_RESULT_OUTPUT_DIR: &str = "output";
+const DEFAULT_GROUPS_CONFIG_PATH: &str = "groups.toml";
 
 /// Полная конфигурация приложения, общая для прикладных сервисов.
 #[derive(Clone)]
@@ -20,6 +22,8 @@ pub(crate) struct Config {
     pub(crate) kerberos: KerberosConfig,
     /// Расположение итоговых CSV-файлов.
     pub(crate) results: ResultConfig,
+    /// Сервис перечитывания соответствий учебных групп из TOML.
+    pub(crate) groups: GroupService,
     /// Серверная соль для вычисления временных паролей студентов.
     pub(crate) salt: String,
 }
@@ -51,6 +55,10 @@ impl Config {
             ldap: LdapConfig::load()?,
             kerberos: KerberosConfig::load()?,
             results: ResultConfig::load()?,
+            groups: GroupService::new(PathBuf::from(optional_or(
+                "GROUPS_CONFIG_PATH",
+                DEFAULT_GROUPS_CONFIG_PATH,
+            ))),
             salt: required_secret("PASSWORD_SALT")?,
         })
     }

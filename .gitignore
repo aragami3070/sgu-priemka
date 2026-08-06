@@ -5,3 +5,4 @@ target/
 *summary.md
 output/
 test.csv
+groups.toml

@@ -387,6 +387,7 @@ mod tests {
     use crate::{
         config::{KerberosConfig, LdapConfig, ResultConfig},
         entities::import::{Group, PreparedIdentity, SecretString, StudentInput},
+        services::groups::GroupService,
     };
 
     use super::*;
@@ -430,6 +431,7 @@ mod tests {
             results: ResultConfig {
                 output_dir: directory.0.clone(),
             },
+            groups: GroupService::new(directory.0.join("groups.toml")),
             salt: "test-salt".to_owned(),
         };
 
@@ -448,7 +450,7 @@ mod tests {
                     group: "001".to_owned(),
                 },
                 login: "ivanovii".to_owned(),
-                group: Group::Pi,
+                group: Group::new(151, "ПИ".to_owned()),
             },
             password: SecretString::new("secret".to_owned()),
         }
