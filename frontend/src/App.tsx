@@ -5,6 +5,7 @@ import { AppShell } from './components/AppShell'
 import { ImportPage } from './pages/ImportPage'
 import { LoginPage } from './pages/LoginPage'
 import { ResultsPage } from './pages/ResultsPage'
+import { GroupsPage } from './pages/GroupsPage'
 import type { AppView, AuthUser } from './types/app'
 import './App.css'
 
@@ -77,7 +78,7 @@ function App() {
       onViewChange={setView}
       onLogout={handleLogout}
     >
-      {view === 'import' ? <ImportPage /> : <ResultsPage />}
+      {view === 'import' ? <ImportPage /> : view === 'results' ? <ResultsPage /> : <GroupsPage />}
     </AppShell>
   )
 }

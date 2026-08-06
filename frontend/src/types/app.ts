@@ -1,4 +1,4 @@
-export type AppView = 'import' | 'results'
+export type AppView = 'import' | 'results' | 'groups'
 
 export interface AuthUser {
   username: string

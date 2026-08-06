@@ -1,5 +1,5 @@
 import type { ReactNode, SyntheticEvent } from 'react'
-import { Download, LogOut, Upload } from 'lucide-react'
+import { Download, FileCog, LogOut, Upload } from 'lucide-react'
 import {
   AppBar,
   Avatar,
@@ -73,6 +73,12 @@ export function AppShell({
                 iconPosition="start"
                 label="Готовые CSV"
                 value="results"
+              />
+              <Tab
+                icon={<FileCog size={18} />}
+                iconPosition="start"
+                label="Группы"
+                value="groups"
               />
             </Tabs>
           </Container>
