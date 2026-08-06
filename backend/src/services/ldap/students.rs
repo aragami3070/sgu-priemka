@@ -72,7 +72,7 @@ impl LdapService {
     ) -> Result<HashSet<String>, LdapError> {
         let search_result = ldap
             .search(
-                &self.config.ldap.users_container_dn,
+                &self.config.ldap.auth_search_base_dn,
                 Scope::Subtree,
                 filter,
                 ["sAMAccountName"],
