@@ -35,7 +35,7 @@ impl LdapService {
         tracing::info!(
             identifier = credentials.identifier(),
             requested_logins = identities.len(),
-            "searching LDAP for student login collisions"
+            "поиск конфликтов логинов студентов в LDAP"
         );
 
         let existing_logins = self
@@ -53,7 +53,7 @@ impl LdapService {
         tracing::info!(
             identifier = credentials.identifier(),
             collisions = collisions.len(),
-            "LDAP student login collision search completed"
+            "поиск конфликтов логинов студентов в LDAP завершён"
         );
         Ok(collisions)
     }
@@ -134,7 +134,7 @@ impl LdapService {
             identifier = credentials.identifier(),
             login = %student.identity.login,
             user_dn = %user_dn,
-            "creating disabled LDAP student account"
+            "создание отключённой учётной записи студента в LDAP"
         );
         let result = ldap
             .add(&user_dn, Self::student_attributes(student))
@@ -145,7 +145,7 @@ impl LdapService {
         tracing::info!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
-            "LDAP student object created disabled"
+            "объект студента в LDAP создан и отключён"
         );
         let result = ldap
             .modify(
@@ -161,7 +161,7 @@ impl LdapService {
         tracing::info!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
-            "LDAP student password set"
+            "пароль студента в LDAP установлен"
         );
 
         let result = ldap
@@ -178,7 +178,7 @@ impl LdapService {
         tracing::info!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
-            "LDAP student account enabled"
+            "учётная запись студента в LDAP включена"
         );
 
         let result = ldap
@@ -196,7 +196,7 @@ impl LdapService {
             identifier = credentials.identifier(),
             login = %student.identity.login,
             group_dn = %group_dn,
-            "LDAP student added to group"
+            "студент добавлен в LDAP-группу"
         );
         Ok(())
     }
@@ -219,7 +219,7 @@ impl LdapService {
             identifier = credentials.identifier(),
             login = %student.identity.login,
             user_dn = %user_dn,
-            "deleting LDAP student account"
+            "удаление учётной записи студента из LDAP"
         );
         let result = ldap
             .delete(&user_dn)
@@ -240,7 +240,7 @@ impl LdapService {
             identifier = credentials.identifier(),
             login = %student.identity.login,
             user_dn = %user_dn,
-            "LDAP student account deleted"
+            "учётная запись студента удалена из LDAP"
         );
         Ok(())
     }
@@ -295,7 +295,7 @@ impl LdapService {
         match entries.len() {
             1 => Ok(()),
             0 => {
-                tracing::info!(%group_dn, "LDAP group does not exist, creating it");
+                tracing::info!(%group_dn, "LDAP-группа отсутствует, создаём её");
                 let result = ldap
                     .add(
                         group_dn,

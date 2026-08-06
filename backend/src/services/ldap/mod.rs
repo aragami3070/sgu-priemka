@@ -60,7 +60,7 @@ impl LdapService {
                     identifier = credentials.identifier(),
                     ldap_result_code = result_code,
                     ldap_diagnostic = %result.text,
-                    "LDAP SASL/GSSAPI authentication rejected"
+                    "LDAP-аутентификация SASL/GSSAPI отклонена"
                 );
                 Err(LdapError::AuthenticationRejected {
                     result_code,

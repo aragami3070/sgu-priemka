@@ -105,7 +105,7 @@ impl ImportService {
             username = %context.username,
             filename = %context.original_filename,
             file_size = file_bytes.len(),
-            "import pipeline started"
+            "конвейер импорта запущен"
         );
 
         let (mut identities, total) = match self.parse_and_validate(&context, file_bytes).await? {
@@ -135,12 +135,12 @@ impl ImportService {
         {
             Ok(stored) => stored,
             Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "result CSV creation failed");
+                tracing::error!(job_id = %context.job_id, %error, "не удалось создать итоговый CSV");
                 return self
                     .finish_internal_failure(
                         &context.job_id,
                         JobStage::SavingResult,
-                        "result CSV creation failed",
+                        "не удалось создать итоговый CSV",
                     )
                     .await;
             }
@@ -159,7 +159,7 @@ impl ImportService {
             job_id = %context.job_id,
             username = %context.username,
             prepared_students = total,
-            "import pipeline completed with validated account preparation; LDAP account creation is pending"
+            "конвейер импорта завершён, подготовка учётных записей выполнена, создание в LDAP ожидает запуска"
         );
         Ok(status)
     }
@@ -175,7 +175,7 @@ impl ImportService {
             job_id = %context.job_id,
             result_owner = %result_owner,
             result_filename = %result_filename,
-            "LDAP creation from stored result started"
+            "начато создание учётных записей LDAP из сохранённого результата"
         );
         let mut students = match self
             .load_result_students(&context, &result_owner, &result_filename)
@@ -229,7 +229,7 @@ impl ImportService {
             job_id = %context.job_id,
             result_owner = %result_owner,
             result_filename = %result_filename,
-            "LDAP deletion from stored result started"
+            "начато удаление учётных записей LDAP из сохранённого результата"
         );
         let students = match self
             .load_result_students(&context, &result_owner, &result_filename)
@@ -271,12 +271,12 @@ impl ImportService {
                 ));
             }
             Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "stored result parsing task failed");
+                tracing::error!(job_id = %context.job_id, %error, "не удалось разобрать сохранённый результат в фоновой задаче");
                 return Ok(PipelineStage::Finished(
                     self.finish_internal_failure(
                         &context.job_id,
                         JobStage::Parsing,
-                        "stored result parsing task failed",
+                        "не удалось разобрать сохранённый результат в фоновой задаче",
                     )
                     .await?,
                 ));
@@ -323,7 +323,7 @@ impl ImportService {
                     row = student.identity.source.source_row,
                     login = %student.identity.login,
                     error = ?error,
-                    "LDAP account creation stopped after partial progress"
+                    "создание учётных записей LDAP остановлено после частичного выполнения"
                 );
                 self.jobs.publish(&context.job_id, status.clone()).await?;
                 return Ok(status);
@@ -347,7 +347,7 @@ impl ImportService {
             job_id = %context.job_id,
             username = %context.username,
             created_students = students.len(),
-            "LDAP creation from stored result completed"
+            "создание учётных записей LDAP из сохранённого результата завершено"
         );
         Ok(status)
     }
@@ -379,7 +379,7 @@ impl ImportService {
                     row = student.identity.source.source_row,
                     login = %student.identity.login,
                     error = ?error,
-                    "LDAP account deletion stopped after partial progress"
+                    "удаление учётных записей LDAP остановлено после частичного выполнения"
                 );
                 self.jobs.publish(&context.job_id, status.clone()).await?;
                 return Ok(status);
@@ -403,7 +403,7 @@ impl ImportService {
             job_id = %context.job_id,
             username = %context.username,
             deleted_students = students.len(),
-            "LDAP deletion from stored result completed"
+            "удаление учётных записей LDAP из сохранённого результата завершено"
         );
         Ok(status)
     }
@@ -425,12 +425,12 @@ impl ImportService {
                 ));
             }
             Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "CSV parsing task failed");
+                tracing::error!(job_id = %context.job_id, %error, "не удалось разобрать CSV в фоновой задаче");
                 return Ok(PipelineStage::Finished(
                     self.finish_internal_failure(
                         &context.job_id,
                         JobStage::Parsing,
-                        "CSV parsing task failed",
+                        "не удалось разобрать CSV в фоновой задаче",
                     )
                     .await?,
                 ));
@@ -451,12 +451,12 @@ impl ImportService {
                 ));
             }
             Err(error) => {
-                tracing::error!(job_id = %context.job_id, %error, "CSV validation task failed");
+                tracing::error!(job_id = %context.job_id, %error, "не удалось проверить CSV в фоновой задаче");
                 return Ok(PipelineStage::Finished(
                     self.finish_internal_failure(
                         &context.job_id,
                         JobStage::Validating,
-                        "CSV validation task failed",
+                        "не удалось проверить CSV в фоновой задаче",
                     )
                     .await?,
                 ));
@@ -517,12 +517,12 @@ impl ImportService {
         let students = match students {
             Ok(students) => students,
             Err(error) => {
-                tracing::error!(job_id = %job_id, %error, "password generation task failed");
+                tracing::error!(job_id = %job_id, %error, "не удалось сгенерировать пароли в фоновой задаче");
                 return Ok(PipelineStage::Finished(
                     self.finish_internal_failure(
                         job_id,
                         JobStage::GeneratingPasswords,
-                        "password generation task failed",
+                        "не удалось сгенерировать пароли в фоновой задаче",
                     )
                     .await?,
                 ));
@@ -606,7 +606,7 @@ impl ImportService {
                     tracing::info!(
                         %job_id,
                         submitted_logins = resolutions.len(),
-                        "replacement login batch accepted for repeated validation"
+                        "пакет замен логинов принят для повторной проверки"
                     );
                 }
                 LoginResolutionResult::TimedOut(status) => return Ok(Some(status)),
@@ -631,7 +631,7 @@ impl ImportService {
                     tracing::warn!(
                         job_id = %context.job_id,
                         error = ?error,
-                        "LDAP login collision search failed"
+                        "поиск конфликтов логинов в LDAP завершился ошибкой"
                     );
                     return self
                         .finish_ldap_failure(&context.job_id, error)
@@ -709,7 +709,7 @@ impl ImportService {
             tracing::info!(
                 %job_id,
                 conflicts = conflicts.len(),
-                "import pipeline is waiting for login conflict resolution batch"
+                "конвейер импорта ожидает пакет разрешения конфликтов логинов"
             );
 
             let batch = match tokio::time::timeout(
@@ -727,7 +727,7 @@ impl ImportService {
                         row: None,
                     };
                     self.jobs.publish(job_id, status.clone()).await?;
-                    tracing::warn!(%job_id, "login conflict resolution batch timed out");
+                    tracing::warn!(%job_id, "истёк срок ожидания пакета разрешения конфликтов логинов");
                     return Ok(LoginResolutionResult::TimedOut(status));
                 }
             };
@@ -812,7 +812,7 @@ impl ImportService {
             row,
         };
         self.jobs.publish(job_id, status.clone()).await?;
-        tracing::warn!(%job_id, %error, "import pipeline failed before LDAP stages");
+        tracing::warn!(%job_id, %error, "конвейер импорта завершился до этапов LDAP");
         Ok(status)
     }
 
@@ -845,7 +845,7 @@ impl ImportService {
             message: "LDAP is unavailable".to_owned(),
             row: None,
         };
-        tracing::warn!(%job_id, error = ?error, "import pipeline stopped during LDAP check");
+        tracing::warn!(%job_id, error = ?error, "конвейер импорта остановлен во время проверки LDAP");
         self.jobs.publish(job_id, status.clone()).await?;
         Ok(status)
     }

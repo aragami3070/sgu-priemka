@@ -58,7 +58,7 @@ impl KerberosService {
         tracing::info!(
             realm = %config.kerberos.realm,
             ccache_dir = %ccache_dir.display(),
-            "Kerberos service initialized"
+            "сервис Kerberos инициализирован"
         );
         Ok(Self {
             realm: config.kerberos.realm.clone(),
@@ -115,7 +115,7 @@ impl KerberosService {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                tracing::warn!(ccache_path = %path.display(), %error, "failed to remove Kerberos ccache")
+                tracing::warn!(ccache_path = %path.display(), %error, "не удалось удалить Kerberos ccache")
             }
         }
     }

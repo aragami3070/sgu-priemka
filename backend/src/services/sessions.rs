@@ -65,7 +65,7 @@ impl SessionService {
             tracing::info!(
                 path = %path.display(),
                 restored_sessions = store.len(),
-                "debug session persistence enabled"
+                "сохранение отладочных сессий включено"
             );
         }
 
@@ -121,7 +121,7 @@ impl SessionService {
             tracing::info!(
                 username = %expired.username,
                 active_sessions = store.len(),
-                "expired local session removed during lookup"
+                "просроченная локальная сессия удалена во время поиска"
             );
             drop(store);
             self.kerberos
@@ -163,7 +163,10 @@ impl SessionService {
         let changed = !removed.is_empty();
         drop(store);
         if changed {
-            tracing::info!(removed_sessions = removed.len(), "expired sessions removed");
+            tracing::info!(
+                removed_sessions = removed.len(),
+                "просроченные сессии удалены"
+            );
             for session in &removed {
                 self.kerberos
                     .destroy_cache(&session.kerberos_credentials)
@@ -186,8 +189,10 @@ impl SessionService {
         let result = tokio::task::spawn_blocking(move || write_sessions(&path, &snapshot)).await;
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => tracing::warn!(%error, "failed to persist debug sessions"),
-            Err(error) => tracing::warn!(%error, "debug session persistence task failed"),
+            Ok(Err(error)) => tracing::warn!(%error, "не удалось сохранить отладочные сессии"),
+            Err(error) => {
+                tracing::warn!(%error, "фоновая задача сохранения отладочных сессий завершилась ошибкой")
+            }
         }
     }
 }
@@ -231,16 +236,16 @@ fn load_sessions(path: &Path, kerberos: &KerberosService) -> HashMap<SessionId, 
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return HashMap::new(),
         Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "failed to read debug sessions");
+            tracing::warn!(path = %path.display(), %error, "не удалось прочитать отладочные сессии");
             return HashMap::new();
         }
     };
     let persisted: Vec<PersistedSession> = match serde_json::from_slice(&bytes) {
         Ok(persisted) => persisted,
         Err(error) => {
-            tracing::warn!(path = %path.display(), %error, "failed to parse debug sessions");
+            tracing::warn!(path = %path.display(), %error, "не удалось разобрать отладочные сессии");
             if let Err(remove_error) = std::fs::remove_file(path) {
-                tracing::warn!(path = %path.display(), %remove_error, "failed to remove incompatible debug session snapshot");
+                tracing::warn!(path = %path.display(), %remove_error, "не удалось удалить несовместимый снимок отладочных сессий");
             }
             return HashMap::new();
         }

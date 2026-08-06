@@ -67,7 +67,7 @@ impl IntoResponse for AppError {
 
 impl From<LdapError> for AppError {
     fn from(error: LdapError) -> Self {
-        tracing::warn!(error = ?error, "LDAP request failed");
+        tracing::warn!(error = ?error, "ошибка запроса к LDAP");
         match error {
             LdapError::InvalidCredentials => Self::Unauthorized,
             LdapError::Forbidden => Self::Forbidden,
@@ -86,7 +86,7 @@ impl From<LdapError> for AppError {
 
 impl From<KerberosError> for AppError {
     fn from(error: KerberosError) -> Self {
-        tracing::warn!(error = ?error, "Kerberos request failed");
+        tracing::warn!(error = ?error, "ошибка запроса к Kerberos");
         match error {
             KerberosError::InvalidCredentials => Self::Unauthorized,
             KerberosError::CacheIo { .. }
@@ -102,7 +102,7 @@ impl From<KerberosError> for AppError {
 
 impl From<ResultError> for AppError {
     fn from(error: ResultError) -> Self {
-        tracing::error!(%error, "mapping result service error to application error");
+        tracing::error!(%error, "ошибка сервиса результатов преобразуется в ошибку приложения");
         Self::Internal
     }
 }

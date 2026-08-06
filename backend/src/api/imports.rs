@@ -85,11 +85,11 @@ async fn create_import(
     let imports = state.imports.clone();
     tokio::spawn(async move {
         if let Err(error) = imports.run(context, file_bytes).await {
-            tracing::error!(%error, "background import pipeline stopped unexpectedly");
+            tracing::error!(%error, "фоновый конвейер импорта неожиданно остановился");
         }
     });
 
-    tracing::info!(%job_id, "CSV upload accepted and import pipeline spawned");
+    tracing::info!(%job_id, "загрузка CSV принята, конвейер импорта запущен в фоне");
     Ok((StatusCode::ACCEPTED, Json(CreateImportResponse { job_id })))
 }
 
@@ -101,7 +101,7 @@ async fn import_events(
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
     let receiver = state.jobs.subscribe(&job_id, &user.username).await?;
-    tracing::info!(%job_id, username = %user.username, "import event WebSocket accepted");
+    tracing::info!(%job_id, username = %user.username, "WebSocket событий импорта принят");
     Ok(upgrade.on_upgrade(move |socket| {
         stream_job_events(socket, job_id, user.username, receiver, state.jobs)
     }))
@@ -167,17 +167,17 @@ async fn stream_job_events(
             let message = match serde_json::to_string(&status) {
                 Ok(message) => message,
                 Err(error) => {
-                    tracing::error!(%job_id, %error, "failed to serialize import job status");
+                    tracing::error!(%job_id, %error, "не удалось сериализовать статус задачи импорта");
                     return;
                 }
             };
 
             if let Err(error) = socket.send(Message::Text(message.into())).await {
-                tracing::info!(%job_id, %error, "import event WebSocket disconnected");
+                tracing::info!(%job_id, %error, "WebSocket событий импорта отключён");
                 return;
             }
             if terminal {
-                tracing::info!(%job_id, "terminal import job status sent over WebSocket");
+                tracing::info!(%job_id, "терминальный статус задачи импорта отправлен через WebSocket");
                 let _ = socket.send(Message::Close(None)).await;
                 return;
             }
@@ -187,14 +187,14 @@ async fn stream_job_events(
         tokio::select! {
             changed = receiver.changed() => {
                 if changed.is_err() {
-                    tracing::info!(%job_id, "import job event channel closed");
+                    tracing::info!(%job_id, "канал событий задачи импорта закрыт");
                     return;
                 }
                 send_current_status = true;
             }
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else {
-                    tracing::info!(%job_id, "import event WebSocket disconnected");
+                    tracing::info!(%job_id, "WebSocket событий импорта отключён");
                     return;
                 };
                 match message {
@@ -208,11 +208,11 @@ async fn stream_job_events(
                                 )
                                 .await
                             {
-                                tracing::warn!(%job_id, %error, "login resolution batch was rejected");
+                                tracing::warn!(%job_id, %error, "пакет разрешения конфликтов логинов отклонён");
                             }
                         }
                         Err(error) => {
-                            tracing::warn!(%job_id, %error, "invalid import WebSocket message ignored");
+                            tracing::warn!(%job_id, %error, "некорректное сообщение WebSocket импорта проигнорировано");
                         }
                     },
                     Message::Close(_) => return,

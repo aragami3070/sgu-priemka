@@ -55,7 +55,7 @@ impl AppState {
             imports,
             results,
         };
-        tracing::info!("application state initialization completed");
+        tracing::info!("инициализация состояния приложения завершена");
         Ok(state)
     }
 }

@@ -49,7 +49,7 @@ impl JobService {
             .iter()
             .find(|(_, job)| job.owner == owner && job.terminal_at.is_none())
         {
-            tracing::info!(%job_id, %owner, "active import job already exists for owner");
+            tracing::info!(%job_id, %owner, "у владельца уже есть активная задача импорта");
             return Err(AppError::ImportBusy);
         }
         let job_id = loop {
@@ -69,7 +69,7 @@ impl JobService {
                 resolution_receiver: Arc::new(Mutex::new(resolution_receiver)),
             },
         );
-        tracing::info!(%job_id, %owner, active_jobs = store.len(), "import job created");
+        tracing::info!(%job_id, %owner, active_jobs = store.len(), "задача импорта создана");
         Ok(job_id)
     }
 
@@ -83,7 +83,7 @@ impl JobService {
         tracing::info!(
             %owner,
             active_job_id = active.as_deref().unwrap_or("none"),
-            "active import job lookup completed"
+            "поиск активной задачи импорта завершён"
         );
         active
     }
@@ -99,7 +99,7 @@ impl JobService {
             let store = self.store.read().await;
             let job = store.get(job_id).ok_or(AppError::NotFound)?;
             if job.owner != owner {
-                tracing::warn!(%job_id, requested_by = %owner, "import login resolution denied");
+                tracing::warn!(%job_id, requested_by = %owner, "доступ к разрешению конфликтов логинов запрещён");
                 return Err(AppError::Forbidden);
             }
             job.resolution_sender.clone()
@@ -109,7 +109,7 @@ impl JobService {
             .send(resolutions)
             .await
             .map_err(|_| AppError::Internal)?;
-        tracing::info!(%job_id, %owner, "import login resolution batch submitted");
+        tracing::info!(%job_id, %owner, "пакет разрешения конфликтов логинов отправлен");
         Ok(())
     }
 
@@ -135,12 +135,12 @@ impl JobService {
     pub(crate) async fn publish(&self, job_id: &str, status: JobStatus) -> Result<(), AppError> {
         let mut store = self.store.write().await;
         let job = store.get_mut(job_id).ok_or_else(|| {
-            tracing::warn!(%job_id, "cannot publish status for missing import job");
+            tracing::warn!(%job_id, "нельзя опубликовать статус отсутствующей задачи импорта");
             AppError::NotFound
         })?;
 
         if job.terminal_at.is_some() {
-            tracing::warn!(%job_id, "attempt to update terminal import job rejected");
+            tracing::warn!(%job_id, "попытка обновить завершённую задачу импорта отклонена");
             return Err(AppError::Internal);
         }
 
@@ -148,7 +148,7 @@ impl JobService {
             job.terminal_at = Some(Instant::now());
         }
         job.status_sender.send_replace(status);
-        tracing::info!(%job_id, terminal = job.terminal_at.is_some(), "import job status published");
+        tracing::info!(%job_id, terminal = job.terminal_at.is_some(), "статус задачи импорта опубликован");
         Ok(())
     }
 
@@ -161,17 +161,17 @@ impl JobService {
         let store = self.store.read().await;
         let job = store.get(job_id).ok_or(AppError::NotFound)?;
         if job.owner != owner {
-            tracing::warn!(%job_id, requested_by = %owner, "import job subscription denied");
+            tracing::warn!(%job_id, requested_by = %owner, "подписка на задачу импорта запрещена");
             return Err(AppError::Forbidden);
         }
 
-        tracing::info!(%job_id, %owner, "import job subscriber registered");
+        tracing::info!(%job_id, %owner, "подписчик задачи импорта зарегистрирован");
         Ok(job.status_sender.subscribe())
     }
 
     /// Удаляет terminal-задачи через десять минут после завершения.
     pub(crate) async fn cleanup_expired(&self) {
-        tracing::info!("starting expired import job cleanup");
+        tracing::info!("начинаем очистку просроченных задач импорта");
         let now = Instant::now();
         let mut store = self.store.write().await;
         let before = store.len();
@@ -183,7 +183,7 @@ impl JobService {
             jobs_before = before,
             jobs_after = store.len(),
             removed_jobs = before - store.len(),
-            "expired import job cleanup completed"
+            "очистка просроченных задач импорта завершена"
         );
     }
 }

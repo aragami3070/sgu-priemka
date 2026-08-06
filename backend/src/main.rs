@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
 
-    tracing::info!(%listen_addr, "backend listening");
+    tracing::info!(%listen_addr, "backend запущен и слушает адрес");
     axum::serve(listener, app).await?;
 
     Ok(())

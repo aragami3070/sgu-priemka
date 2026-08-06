@@ -40,7 +40,7 @@ impl ResultService {
 
         tracing::info!(
             output_dir = %config.results.output_dir.display(),
-            "result storage initialized"
+            "хранилище результатов инициализировано"
         );
         Ok(Self { config })
     }
@@ -84,7 +84,7 @@ impl ResultService {
                 tracing::warn!(
                     path = %temporary_path.display(),
                     %cleanup_error,
-                    "failed to remove temporary result file"
+                    "не удалось удалить временный файл результата"
                 );
             }
             return Err(storage_error("atomically write result", &path, error).into());
@@ -95,7 +95,7 @@ impl ResultService {
             %filename,
             student_count = students.len(),
             size = bytes.len(),
-            "result CSV created"
+            "итоговый CSV создан"
         );
 
         Ok(StoredResult {
@@ -137,11 +137,11 @@ impl ResultService {
             }
 
             let Some(owner) = owner_entry.file_name().to_str().map(str::to_owned) else {
-                tracing::warn!(path = %owner_entry.path().display(), "skipping non-UTF-8 result owner directory");
+                tracing::warn!(path = %owner_entry.path().display(), "пропускаем каталог владельца результата с недопустимым UTF-8 именем");
                 continue;
             };
             if validate_path_segment(&owner, "result owner").is_err() {
-                tracing::warn!(%owner, "skipping invalid result owner directory");
+                tracing::warn!(%owner, "пропускаем каталог владельца результата с недопустимым именем");
                 continue;
             }
 
@@ -150,7 +150,7 @@ impl ResultService {
         }
 
         results.sort_unstable_by_key(|result| Reverse(result.created_at));
-        tracing::info!(result_count = results.len(), "result list collected");
+        tracing::info!(result_count = results.len(), "список результатов собран");
         Ok(results)
     }
 
@@ -170,7 +170,7 @@ impl ResultService {
         let bytes = fs::read(&path)
             .await
             .map_err(|error| storage_error("read result", &path, error))?;
-        tracing::info!(%owner, %filename, size = bytes.len(), "result CSV read");
+        tracing::info!(%owner, %filename, size = bytes.len(), "итоговый CSV прочитан");
         Ok(bytes)
     }
 
@@ -194,7 +194,7 @@ impl ResultService {
             .await
             .map_err(|error| storage_error("delete result", &path, error))?;
         match fs::remove_dir(&owner_dir).await {
-            Ok(()) => tracing::info!(%owner, "empty result owner directory removed"),
+            Ok(()) => tracing::info!(%owner, "пустой каталог владельца результата удалён"),
             Err(error)
                 if matches!(
                     error.kind(),
@@ -205,12 +205,12 @@ impl ResultService {
                     %owner,
                     path = %owner_dir.display(),
                     %error,
-                    "result CSV was deleted, but its empty owner directory could not be removed"
+                    "итоговый CSV удалён, но пустой каталог владельца удалить не удалось"
                 );
             }
         }
 
-        tracing::info!(%owner, %filename, "result CSV deleted manually");
+        tracing::info!(%owner, %filename, "итоговый CSV удалён вручную");
         Ok(())
     }
 
@@ -269,7 +269,7 @@ impl ResultService {
             .map_err(|error| storage_error("inspect result file", &path, error))?;
 
         let Some(filename) = entry.file_name().to_str().map(str::to_owned) else {
-            tracing::warn!(path = %path.display(), "skipping non-UTF-8 result filename");
+            tracing::warn!(path = %path.display(), "пропускаем имя результата с недопустимым UTF-8");
             return Ok(None);
         };
         if validate_result_filename(&filename).is_err() {
@@ -351,7 +351,7 @@ fn result_filename(created_at: OffsetDateTime) -> String {
 fn validate_result_filename(filename: &str) -> Result<(), AppError> {
     validate_path_segment(filename, "result filename")?;
     if !filename.ends_with(".csv") {
-        tracing::warn!(%filename, "result filename has an invalid extension");
+        tracing::warn!(%filename, "у результата недопустимое расширение файла");
         return Err(AppError::NotFound);
     }
     Ok(())
@@ -364,7 +364,7 @@ fn validate_path_segment(value: &str, kind: &'static str) -> Result<(), AppError
         || value.contains(['/', '\\'])
         || value.chars().any(char::is_control)
     {
-        tracing::warn!(%kind, %value, "invalid result path segment rejected");
+        tracing::warn!(%kind, %value, "недопустимый сегмент пути результата отклонён");
         Err(AppError::Validation(format!("invalid {kind}")))
     } else {
         Ok(())

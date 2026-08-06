@@ -26,7 +26,7 @@ pub(super) fn add_session_cookie(
 
     tracing::info!(
         cookie_name = SESSION_COOKIE_NAME,
-        "session cookie added to response jar"
+        "cookie сессии добавлена в ответ"
     );
     Ok(jar.add(cookie))
 }
@@ -42,7 +42,7 @@ pub(super) fn remove_session_cookie(jar: CookieJar, secure: bool) -> CookieJar {
 
     tracing::info!(
         cookie_name = SESSION_COOKIE_NAME,
-        "session cookie removal added to response jar"
+        "удаление cookie сессии добавлено в ответ"
     );
     jar.remove(cookie)
 }
@@ -51,7 +51,7 @@ pub(super) fn remove_session_cookie(jar: CookieJar, secure: bool) -> CookieJar {
 pub(super) fn session_id_from_headers(headers: &HeaderMap) -> Result<SessionId, AppError> {
     tracing::info!(
         cookie_header_count = headers.get_all(axum::http::header::COOKIE).iter().count(),
-        "reading session cookie from request headers"
+        "чтение cookie сессии из заголовков запроса"
     );
     session_id_from_jar(&CookieJar::from_headers(headers))
 }
@@ -61,23 +61,23 @@ pub(super) fn session_id_from_jar(jar: &CookieJar) -> Result<SessionId, AppError
     let Some(cookie) = jar.get(SESSION_COOKIE_NAME) else {
         tracing::info!(
             cookie_name = SESSION_COOKIE_NAME,
-            "session cookie is missing"
+            "cookie сессии отсутствует"
         );
         return Err(AppError::Unauthorized);
     };
-    tracing::info!(cookie_name = SESSION_COOKIE_NAME, "session cookie found");
+    tracing::info!(cookie_name = SESSION_COOKIE_NAME, "cookie сессии найдена");
 
     let session_id = cookie.value().parse().map_err(|_| {
         tracing::info!(
             cookie_name = SESSION_COOKIE_NAME,
-            "session cookie does not contain a valid UUID"
+            "cookie сессии не содержит корректный UUID"
         );
         AppError::Unauthorized
     })?;
 
     tracing::info!(
         cookie_name = SESSION_COOKIE_NAME,
-        "session cookie UUID parsed successfully"
+        "UUID cookie сессии успешно разобран"
     );
     Ok(session_id)
 }

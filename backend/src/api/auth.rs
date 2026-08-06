@@ -109,7 +109,7 @@ async fn login(
     ) {
         Ok(jar) => jar,
         Err(error) => {
-            tracing::warn!(%username, %error, "failed to build session cookie; removing newly created session");
+            tracing::warn!(%username, %error, "не удалось создать cookie сессии, удаляем только что созданную сессию");
             state.sessions.remove(&session_id).await;
             return Err(error);
         }
@@ -118,7 +118,7 @@ async fn login(
         state.sessions.remove(&previous_session_id).await;
     }
 
-    tracing::info!(%username, "user logged in");
+    tracing::info!(%username, "пользователь вошёл в систему");
 
     Ok((
         jar,
@@ -137,7 +137,7 @@ async fn logout(
     if let Ok(session_id) = cookies::session_id_from_jar(&jar)
         && let Some(session) = state.sessions.remove(&session_id).await
     {
-        tracing::info!(username = %session.username, "user logged out");
+        tracing::info!(username = %session.username, "пользователь вышел из системы");
     }
 
     let jar = cookies::remove_session_cookie(jar, state.config.cookie_secure);

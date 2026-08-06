@@ -26,7 +26,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         tracing::info!(
             username = %session.username,
             ldap_identifier = session.kerberos_credentials.identifier(),
-            "authenticated user extraction completed"
+            "извлечение аутентифицированного пользователя завершено"
         );
 
         Ok(Self {

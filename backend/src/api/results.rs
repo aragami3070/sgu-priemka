@@ -153,11 +153,11 @@ async fn create_accounts(
             .run_result(context, result_owner, filename_for_task)
             .await
         {
-            tracing::error!(job_id = %job_id_for_task, %error, "stored-result LDAP creation stopped unexpectedly");
+            tracing::error!(job_id = %job_id_for_task, %error, "создание LDAP-учётных записей из результата неожиданно остановилось");
         }
     });
 
-    tracing::info!(%job_id, %owner, %filename, "LDAP creation from stored result accepted");
+    tracing::info!(%job_id, %owner, %filename, "создание LDAP-учётных записей из результата принято");
     Ok((
         StatusCode::ACCEPTED,
         Json(AccountOperationResponse { job_id }),
@@ -200,12 +200,12 @@ async fn delete_accounts(
             tracing::error!(
                 job_id = %job_id_for_task,
                 %error,
-                "stored-result LDAP deletion stopped unexpectedly"
+                "удаление LDAP-учётных записей из результата неожиданно остановилось"
             );
         }
     });
 
-    tracing::info!(%job_id, %owner, %filename, "LDAP deletion from stored result accepted");
+    tracing::info!(%job_id, %owner, %filename, "удаление LDAP-учётных записей из результата принято");
     Ok((
         StatusCode::ACCEPTED,
         Json(AccountOperationResponse { job_id }),
