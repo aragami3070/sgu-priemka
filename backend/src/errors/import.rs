@@ -44,7 +44,4 @@ pub(crate) enum ImportError {
         /// LDAP-атрибут, в котором найден конфликт.
         attribute: String,
     },
-    /// Итоговый CSV не удалось сформировать или сохранить.
-    #[error("result file could not be created")]
-    ResultStorage,
 }

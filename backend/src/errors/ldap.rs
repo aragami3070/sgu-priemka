@@ -32,9 +32,6 @@ pub(crate) enum LdapPhase {
 /// Единая ошибка LDAP-аутентификации и операций с учётными записями.
 #[derive(Debug, Error)]
 pub(crate) enum LdapError {
-    /// LDAP отклонил credentials пользователя.
-    #[error("invalid LDAP credentials")]
-    InvalidCredentials,
     /// Не удалось получить explicit GSSAPI credential из session ccache.
     #[error("Kerberos credential preparation for LDAP failed")]
     Kerberos {

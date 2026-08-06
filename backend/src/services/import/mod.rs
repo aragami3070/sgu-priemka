@@ -844,7 +844,6 @@ impl ImportService {
             ImportError::Collision { row, .. } => {
                 (JobStage::Validating, "csv_collision", Some(*row))
             }
-            ImportError::ResultStorage => (JobStage::SavingResult, "result_storage", None),
         };
         let status = JobStatus::Failed {
             stage,

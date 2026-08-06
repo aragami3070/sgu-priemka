@@ -69,7 +69,6 @@ impl From<LdapError> for AppError {
     fn from(error: LdapError) -> Self {
         tracing::warn!(error = ?error, "ошибка запроса к LDAP");
         match error {
-            LdapError::InvalidCredentials => Self::Unauthorized,
             LdapError::Forbidden => Self::Forbidden,
             LdapError::Connect { .. }
             | LdapError::Kerberos { .. }
