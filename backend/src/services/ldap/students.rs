@@ -12,6 +12,9 @@ use time::OffsetDateTime;
 
 use super::LdapService;
 
+/// Код LDAP для объекта, которого уже нет в каталоге.
+const LDAP_NO_SUCH_OBJECT: u32 = 32;
+
 impl LdapService {
     /// Ищет в LDAP значения, сформированные из загруженных строк.
     ///
@@ -222,6 +225,15 @@ impl LdapService {
             .delete(&user_dn)
             .await
             .map_err(|error| Self::operation_error(LdapPhase::DeleteObject, false, error))?;
+        if result.rc == LDAP_NO_SUCH_OBJECT {
+            tracing::info!(
+                identifier = credentials.identifier(),
+                login = %student.identity.login,
+                user_dn = %user_dn,
+                "учётная запись студента уже отсутствует, удаление пропущено"
+            );
+            return Ok(());
+        }
         Self::check_operation(result, LdapPhase::DeleteObject, false)?;
 
         tracing::info!(
