@@ -6,6 +6,8 @@ use crate::services::groups::GroupService;
 const DEFAULT_SESSION_TTL_SECONDS: u64 = 60 * 60;
 const DEFAULT_RESULT_OUTPUT_DIR: &str = "output";
 const DEFAULT_GROUPS_CONFIG_PATH: &str = "groups.toml";
+const DEFAULT_SMTP_TIMEOUT_SECONDS: u64 = 30;
+const DEFAULT_SMTP_MAX_CONCURRENT: usize = 5;
 
 /// Полная конфигурация приложения, общая для прикладных сервисов.
 #[derive(Clone)]
@@ -24,6 +26,8 @@ pub(crate) struct Config {
     pub(crate) results: ResultConfig,
     /// Сервис перечитывания соответствий учебных групп из TOML.
     pub(crate) groups: GroupService,
+    /// Настройки SMTP и шаблонов почтовой рассылки.
+    pub(crate) mail: MailConfig,
     /// Серверная соль для вычисления временных паролей студентов.
     pub(crate) salt: String,
 }
@@ -59,7 +63,107 @@ impl Config {
                 "GROUPS_CONFIG_PATH",
                 DEFAULT_GROUPS_CONFIG_PATH,
             ))),
+            mail: MailConfig::load()?,
             salt: required_secret("PASSWORD_SALT")?,
+        })
+    }
+}
+
+/// Режим защищённого соединения с SMTP-сервером.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum SmtpSecurity {
+    /// Обычное соединение с последующим переходом на TLS через STARTTLS.
+    StartTls,
+    /// TLS устанавливается сразу при подключении.
+    ImplicitTls,
+}
+
+/// Настройки SMTP, задаваемые только на стороне backend.
+#[derive(Clone, Debug)]
+pub(crate) struct MailConfig {
+    /// Имя SMTP-сервера.
+    pub(crate) smtp_host: String,
+    /// Явно заданный порт SMTP или порт по умолчанию для выбранной защиты.
+    pub(crate) smtp_port: Option<u16>,
+    /// Режим TLS для SMTP.
+    pub(crate) smtp_security: SmtpSecurity,
+    /// Логин SMTP AUTH.
+    pub(crate) smtp_username: Option<String>,
+    /// Пароль SMTP AUTH.
+    pub(crate) smtp_password: Option<String>,
+    /// Адрес отправителя.
+    pub(crate) from_address: String,
+    /// Отображаемое имя отправителя.
+    pub(crate) from_name: String,
+    /// Тема писем с credentials.
+    pub(crate) subject: String,
+    /// Максимальное количество параллельных SMTP-операций.
+    pub(crate) max_concurrent: usize,
+    /// Таймаут одной SMTP-операции в секундах.
+    pub(crate) timeout_seconds: u64,
+}
+
+impl MailConfig {
+    /// Загружает SMTP-конфигурацию из переменных окружения.
+    fn load() -> Result<Self, ConfigError> {
+        let smtp_security = match optional_or("SMTP_SECURITY", "starttls")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "starttls" => SmtpSecurity::StartTls,
+            "implicit_tls" | "implicit-tls" | "tls" => SmtpSecurity::ImplicitTls,
+            value => {
+                return Err(ConfigError::InvalidValue {
+                    name: "SMTP_SECURITY",
+                    value: value.to_owned(),
+                    expected: "starttls или implicit_tls",
+                });
+            }
+        };
+        let max_concurrent = parse_or(
+            "SMTP_MAX_CONCURRENT",
+            DEFAULT_SMTP_MAX_CONCURRENT,
+            "положительное целое число",
+        )?;
+        if max_concurrent == 0 {
+            return Err(ConfigError::InvalidValue {
+                name: "SMTP_MAX_CONCURRENT",
+                value: "0".to_owned(),
+                expected: "положительное целое число",
+            });
+        }
+        let timeout_seconds = parse_or(
+            "SMTP_TIMEOUT_SECONDS",
+            DEFAULT_SMTP_TIMEOUT_SECONDS,
+            "положительное целое число секунд",
+        )?;
+        if timeout_seconds == 0 {
+            return Err(ConfigError::InvalidValue {
+                name: "SMTP_TIMEOUT_SECONDS",
+                value: "0".to_owned(),
+                expected: "положительное целое число секунд",
+            });
+        }
+        let smtp_username = optional_env("SMTP_USERNAME");
+        let smtp_password = optional_env("SMTP_PASSWORD");
+        if smtp_username.is_some() != smtp_password.is_some() {
+            return Err(ConfigError::InvalidValue {
+                name: "SMTP_USERNAME/SMTP_PASSWORD",
+                value: "неполная пара SMTP AUTH credentials".to_owned(),
+                expected: "задать обе переменные или не задавать ни одной",
+            });
+        }
+        Ok(Self {
+            smtp_host: required("SMTP_HOST")?,
+            smtp_port: optional_parse("SMTP_PORT", "порт SMTP")?,
+            smtp_security,
+            smtp_username,
+            smtp_password,
+            from_address: required("SMTP_FROM_ADDRESS")?,
+            from_name: required("SMTP_FROM_NAME")?,
+            subject: required("SMTP_SUBJECT")?,
+            max_concurrent,
+            timeout_seconds,
         })
     }
 }
@@ -157,6 +261,32 @@ fn optional_or(name: &str, default: &str) -> String {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| default.to_owned())
+}
+
+/// Возвращает непустую переменную окружения без значения по умолчанию.
+fn optional_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Разбирает необязательную переменную окружения в число.
+fn optional_parse<T>(name: &'static str, expected: &'static str) -> Result<Option<T>, ConfigError>
+where
+    T: FromStr,
+{
+    let Some(value) = optional_env(name) else {
+        return Ok(None);
+    };
+    value
+        .parse()
+        .map(Some)
+        .map_err(|_| ConfigError::InvalidValue {
+            name,
+            value,
+            expected,
+        })
 }
 
 /// Разбирает переменную либо возвращает переданное значение по умолчанию.
@@ -275,6 +405,17 @@ mod tests {
         "KERBEROS_REALM",
         "KERBEROS_CCACHE_DIR",
         "RESULT_OUTPUT_DIR",
+        "GROUPS_CONFIG_PATH",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_SECURITY",
+        "SMTP_USERNAME",
+        "SMTP_PASSWORD",
+        "SMTP_FROM_ADDRESS",
+        "SMTP_FROM_NAME",
+        "SMTP_SUBJECT",
+        "SMTP_MAX_CONCURRENT",
+        "SMTP_TIMEOUT_SECONDS",
         "PASSWORD_SALT",
     ];
 
@@ -292,6 +433,10 @@ mod tests {
         ),
         ("KERBEROS_REALM", "MAIN.SGU.RU"),
         ("KERBEROS_CCACHE_DIR", "/run/ad-provisioner/krb5"),
+        ("SMTP_HOST", "smtp.test"),
+        ("SMTP_FROM_ADDRESS", "admission@example.com"),
+        ("SMTP_FROM_NAME", "Приёмная комиссия"),
+        ("SMTP_SUBJECT", "Данные учётной записи"),
         ("PASSWORD_SALT", "password-salt"),
     ];
 
