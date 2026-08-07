@@ -10,6 +10,7 @@ export type JobStage =
   | 'generating_passwords'
   | 'creating_accounts'
   | 'deleting_accounts'
+  | 'sending_mail'
   | 'saving_result'
 
 export interface ResultReference {
@@ -49,6 +50,20 @@ export type JobStatus =
   | {
       type: 'deleted'
       deleted: number
+      total: number
+      result: ResultReference
+    }
+  | {
+      type: 'mail_progress'
+      current: number
+      total: number
+      accepted: number
+      failed: number
+    }
+  | {
+      type: 'mail_completed'
+      accepted: number
+      failed: number
       total: number
       result: ResultReference
     }

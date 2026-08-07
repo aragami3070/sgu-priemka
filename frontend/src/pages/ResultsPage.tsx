@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Download,
   FileClock,
+  Mail,
   RefreshCw,
   RotateCcw,
   Trash2,
@@ -38,6 +39,7 @@ import {
   downloadResult,
   getResultErrorMessage,
   listResults,
+  sendCredentialsFromResult,
 } from "../api/results";
 import type { ResultItem } from "../api/results";
 import { openImportEvents } from "../api/imports";
@@ -83,8 +85,11 @@ export function ResultsPage() {
   const [creationStatus, setCreationStatus] = useState<JobStatus | null>(null);
   const [creationSuccess, setCreationSuccess] = useState<string | null>(null);
   const [deletionSuccess, setDeletionSuccess] = useState<string | null>(null);
+  const [mailingKey, setMailingKey] = useState<string | null>(null);
+  const [mailSuccess, setMailSuccess] = useState<string | null>(null);
   const creationSocketRef = useRef<WebSocket | null>(null);
   const deletionSocketRef = useRef<WebSocket | null>(null);
+  const mailSocketRef = useRef<WebSocket | null>(null);
 
   const loadResults = useCallback(async () => {
     setIsLoading(true);
@@ -113,6 +118,8 @@ export function ResultsPage() {
       creationSocketRef.current = null;
       deletionSocketRef.current?.close();
       deletionSocketRef.current = null;
+      mailSocketRef.current?.close();
+      mailSocketRef.current = null;
     };
   }, []);
 
@@ -321,6 +328,62 @@ export function ResultsPage() {
     }
   };
 
+  const handleSendCredentials = async (result: ResultItem) => {
+    const key = resultKey(result);
+    if (mailingKey || creatingKey || deletingAccountsKey) return;
+    setMailingKey(key);
+    setMailSuccess(null);
+    setError(null);
+    const previousSocket = mailSocketRef.current;
+    mailSocketRef.current = null;
+    previousSocket?.close();
+    try {
+      const { job_id: jobId } = await sendCredentialsFromResult(result);
+      const socket = openImportEvents(jobId);
+      mailSocketRef.current = socket;
+      let terminalReceived = false;
+      socket.onmessage = (event) => {
+        try {
+          const nextStatus = JSON.parse(String(event.data)) as JobStatus;
+          if (nextStatus.type === "mail_completed") {
+            terminalReceived = true;
+            setMailingKey(null);
+            setMailSuccess(
+              `Рассылка завершена: принято ${nextStatus.accepted}, ошибок ${nextStatus.failed}.`,
+            );
+          } else if (nextStatus.type === "failed") {
+            terminalReceived = true;
+            setMailingKey(null);
+            setError(nextStatus.message);
+          }
+        } catch {
+          terminalReceived = true;
+          setMailingKey(null);
+          setError("Backend прислал некорректный статус рассылки.");
+          socket.close();
+        }
+      };
+      socket.onclose = (event) => {
+        window.setTimeout(() => {
+          if (mailSocketRef.current !== socket) return;
+          if (!terminalReceived && event.code !== 1000) {
+            setError("Связь с задачей рассылки потеряна.");
+          }
+          setMailingKey(null);
+          mailSocketRef.current = null;
+        }, 0);
+      };
+    } catch (requestError) {
+      setError(
+        getResultErrorMessage(
+          requestError,
+          "Не удалось запустить рассылку учётных данных.",
+        ),
+      );
+      setMailingKey(null);
+    }
+  };
+
   const creationConflictStatus =
     creationStatus?.type === "awaiting_login_resolutions"
       ? creationStatus
@@ -431,6 +494,7 @@ export function ResultsPage() {
                 const isDeleting = deletingKey === key;
                 const isCreating = creatingKey === key;
                 const isDeletingAccounts = deletingAccountsKey === key;
+                const isMailing = mailingKey === key;
                 return (
                   <TableRow key={key} hover>
                     <TableCell>{result.owner}</TableCell>
@@ -465,7 +529,8 @@ export function ResultsPage() {
                                 isDownloading ||
                                 isDeleting ||
                                 creatingKey !== null ||
-                                deletingAccountsKey !== null
+                                deletingAccountsKey !== null ||
+                                mailingKey !== null
                               }
                               onClick={() => void handleCreateAccounts(result)}
                             >
@@ -486,7 +551,8 @@ export function ResultsPage() {
                                 isDownloading ||
                                 isDeleting ||
                                 creatingKey !== null ||
-                                deletingAccountsKey !== null
+                                deletingAccountsKey !== null ||
+                                mailingKey !== null
                               }
                               onClick={() =>
                                 setDeleteAccountsCandidate(result)
@@ -496,6 +562,28 @@ export function ResultsPage() {
                                 <CircularProgress size={19} />
                               ) : (
                                 <UserX size={19} />
+                              )}
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="Отправить учётные данные на почты">
+                          <span>
+                            <IconButton
+                              color="secondary"
+                              aria-label={`Отправить учётные данные из ${result.filename}`}
+                              disabled={
+                                isDownloading ||
+                                isDeleting ||
+                                creatingKey !== null ||
+                                deletingAccountsKey !== null ||
+                                mailingKey !== null
+                              }
+                              onClick={() => void handleSendCredentials(result)}
+                            >
+                              {isMailing ? (
+                                <CircularProgress size={19} />
+                              ) : (
+                                <Mail size={19} />
                               )}
                             </IconButton>
                           </span>
@@ -622,6 +710,21 @@ export function ResultsPage() {
           onClose={() => setDeletionSuccess(null)}
         >
           {deletionSuccess}
+        </Alert>
+      </Snackbar>
+
+      <Snackbar
+        open={mailSuccess !== null}
+        autoHideDuration={6000}
+        onClose={() => setMailSuccess(null)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      >
+        <Alert
+          severity="success"
+          variant="filled"
+          onClose={() => setMailSuccess(null)}
+        >
+          {mailSuccess}
         </Alert>
       </Snackbar>
     </Box>

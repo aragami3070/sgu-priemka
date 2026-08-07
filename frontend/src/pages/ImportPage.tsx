@@ -36,6 +36,7 @@ const stageLabels: Record<JobStage, string> = {
   generating_passwords: "Генерация паролей",
   creating_accounts: "Создание учётных записей",
   deleting_accounts: "Удаление учётных записей",
+  sending_mail: "Отправка учётных данных",
   saving_result: "Сохранение результата",
 };
 

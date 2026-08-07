@@ -61,6 +61,15 @@ export async function deleteAccountsFromResult(
   return response.data
 }
 
+export async function sendCredentialsFromResult(
+  result: ResultItem,
+): Promise<CreateAccountsResponse> {
+  const response = await apiClient.post<CreateAccountsResponse>(
+    `/mail/${encodeURIComponent(result.owner)}/${encodeURIComponent(result.filename)}/send-credentials`,
+  )
+  return response.data
+}
+
 export function getResultErrorMessage(
   error: unknown,
   fallback: string,
