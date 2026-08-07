@@ -8,17 +8,20 @@ axum = { version = "0.8.9", features = ["multipart", "ws"] }
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 csv = "1.4.0"
 dotenvy = "0.15.7"
+futures-util = "0.3"
 encoding_rs = "0.8.35"
 hex = "0.4.3"
 http = "1.5.0"
 cross-krb5 = "0.4.2"
 krb5-sys = "0.3.0"
 ldap3 = { version = "0.12.1", features = ["gssapi"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "pool", "tokio1", "tokio1-rustls", "webpki-roots", "ring", "tracing"] }
 libgssapi = { version = "0.9", default-features = false }
 libgssapi-sys = "0.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+handlebars = "6"
 thiserror = "2.0.19"
 toml = "0.8"
 time = { version = "0.3", features = ["formatting", "serde"] }
