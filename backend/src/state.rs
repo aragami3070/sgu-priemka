@@ -5,7 +5,7 @@ use crate::{
     errors::AppError,
     services::{
         import::ImportService, jobs::JobService, kerberos::KerberosService, ldap::LdapService,
-        results::ResultService, sessions::SessionService,
+        mail::MailService, results::ResultService, sessions::SessionService,
     },
 };
 
@@ -26,6 +26,8 @@ pub(crate) struct AppState {
     pub(crate) jobs: Arc<JobService>,
     /// Сервис сформированных итоговых CSV.
     pub(crate) results: Arc<ResultService>,
+    /// Общий SMTP-сервис для рассылки credentials.
+    pub(crate) mail: Arc<MailService>,
 }
 
 impl AppState {
@@ -39,6 +41,10 @@ impl AppState {
         let sessions = Arc::new(SessionService::new(config.session_ttl, kerberos.clone()));
         let jobs = Arc::new(JobService::new());
         let results = Arc::new(ResultService::new(config.clone())?);
+        let mail = Arc::new(MailService::new(&config.mail).map_err(|error| {
+            tracing::error!(%error, "не удалось инициализировать почтовый сервис");
+            AppError::Internal
+        })?);
         let imports = Arc::new(ImportService::new(
             ldap.clone(),
             jobs.clone(),
@@ -54,6 +60,7 @@ impl AppState {
             jobs,
             imports,
             results,
+            mail,
         };
         tracing::info!("инициализация состояния приложения завершена");
         Ok(state)
