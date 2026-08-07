@@ -23,6 +23,8 @@ pub(crate) enum LdapPhase {
     SetPassword,
     /// Включение учётной записи после установки пароля.
     EnableAccount,
+    /// Требует смену пароля
+    RequirePasswordChange,
     /// Добавление созданной учётной записи в учебную группу.
     AddToGroup,
     /// Удаление учётной записи из LDAP.
