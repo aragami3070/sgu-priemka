@@ -385,7 +385,7 @@ mod tests {
     use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
     use crate::{
-        config::{KerberosConfig, LdapConfig, ResultConfig},
+        config::{KerberosConfig, LdapConfig, MailConfig, ResultConfig, SmtpSecurity},
         entities::import::{Group, PreparedIdentity, SecretString, StudentInput},
         services::groups::GroupService,
     };
@@ -432,6 +432,18 @@ mod tests {
                 output_dir: directory.0.clone(),
             },
             groups: GroupService::new(directory.0.join("groups.toml")),
+            mail: MailConfig {
+                smtp_host: "smtp.test".to_owned(),
+                smtp_port: Some(587),
+                smtp_security: SmtpSecurity::StartTls,
+                smtp_username: None,
+                smtp_password: None,
+                from_address: "admission@example.com".to_owned(),
+                from_name: "Приёмная комиссия".to_owned(),
+                subject: "Данные учётной записи".to_owned(),
+                max_concurrent: 5,
+                timeout_seconds: 30,
+            },
             salt: "test-salt".to_owned(),
         };
 

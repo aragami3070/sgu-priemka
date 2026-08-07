@@ -5,7 +5,7 @@ use axum::{
 };
 use thiserror::Error;
 
-use super::{KerberosError, LdapError, ResultError};
+use super::{KerberosError, LdapError, MailError, ResultError};
 
 /// Ошибки, которые прикладные сервисы могут передать в HTTP-слой.
 #[derive(Debug, Error)]
@@ -96,6 +96,13 @@ impl From<KerberosError> for AppError {
             | KerberosError::InteriorNul { .. }
             | KerberosError::CacheAlreadyExists(_) => Self::LdapUnavailable,
         }
+    }
+}
+
+impl From<MailError> for AppError {
+    fn from(error: MailError) -> Self {
+        tracing::warn!(error = ?error, "ошибка почтового сервиса");
+        Self::Internal
     }
 }
 

@@ -74,7 +74,7 @@ pub(super) fn generate_password(login: &str, uuid: &str, salt: &str) -> SecretSt
     hasher.update([0]);
     hasher.update(uuid.as_bytes());
 
-    SecretString::new(hex::encode(hasher.finalize()))
+    SecretString::new((hex::encode(hasher.finalize())[..16]).to_owned())
 }
 
 #[cfg(test)]
@@ -307,11 +307,8 @@ mod tests {
             "test-salt",
         );
 
-        assert_eq!(
-            password,
-            "0f2af905f83a4c740b304c6a9991e462a6ec595377d37ac38ed56d89611bdfbe"
-        );
-        assert_eq!(password.len(), 64);
+        assert_eq!(password, "0f2af905f83a4c74");
+        assert_eq!(password.len(), 16);
         assert!(
             password
                 .chars()
