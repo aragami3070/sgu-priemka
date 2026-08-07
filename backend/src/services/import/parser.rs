@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, io::Cursor};
 
 use csv::{ReaderBuilder, StringRecord};
 use encoding_rs::WINDOWS_1251;
@@ -21,6 +21,19 @@ const EXPECTED_RESULT_HEADERS: [&str; 7] = [
     "Login",
     "Pass",
 ];
+
+/// Минимальный набор данных итогового CSV, необходимый для рассылки.
+#[derive(Debug)]
+pub(crate) struct MailCredentialRow {
+    /// Номер строки CSV с единицы для сопоставления результата.
+    pub(crate) source_row: usize,
+    /// Личная почта получателя.
+    pub(crate) email: String,
+    /// Логин созданной учётной записи.
+    pub(crate) login: String,
+    /// Временный пароль созданной учётной записи.
+    pub(crate) password: String,
+}
 
 /// Декодирует UTF-8/Windows-1251 CSV и преобразует его строки в `StudentInput`.
 pub(super) fn parse_csv(bytes: &[u8]) -> Result<Vec<StudentInput>, ImportError> {
@@ -45,15 +58,68 @@ pub(super) fn parse_csv(bytes: &[u8]) -> Result<Vec<StudentInput>, ImportError> 
 }
 
 /// Читает ранее сформированный CSV с credentials для запуска LDAP-создания.
-pub(super) fn parse_result_csv(
+pub(crate) fn parse_result_csv(
     bytes: &[u8],
     groups: &Groups,
 ) -> Result<Vec<PreparedStudent>, ImportError> {
+    let mut reader = result_csv_reader(bytes)?;
+
+    reader
+        .records()
+        .enumerate()
+        .map(|(index, record)| {
+            let source_row = index + 2;
+            let record = record.map_err(|error| parse_error(source_row, error))?;
+            result_student_from_record(source_row, &record, groups)
+        })
+        .collect()
+}
+
+/// Читает из итогового CSV только поля, нужные для отправки письма.
+pub(crate) fn parse_credentials_csv(bytes: &[u8]) -> Result<Vec<MailCredentialRow>, ImportError> {
+    let mut reader = result_csv_reader(bytes)?;
+
+    reader
+        .records()
+        .enumerate()
+        .map(|(index, record)| {
+            let source_row = index + 2;
+            let record = record.map_err(|error| parse_error(source_row, error))?;
+            let field = |column: usize| {
+                record
+                    .get(column)
+                    .map(str::trim)
+                    .map(str::to_owned)
+                    .ok_or_else(|| ImportError::Parse {
+                        row: source_row,
+                        message: format!("missing column `{}`", EXPECTED_RESULT_HEADERS[column]),
+                    })
+            };
+            let login = field(5)?;
+            let password = field(6)?;
+            if login.is_empty() || password.is_empty() {
+                return Err(ImportError::Validation {
+                    row: source_row,
+                    message: "логин или пароль пустой".to_owned(),
+                });
+            }
+            Ok(MailCredentialRow {
+                source_row,
+                email: field(3)?,
+                login,
+                password,
+            })
+        })
+        .collect()
+}
+
+/// Декодирует итоговый CSV, создаёт reader и проверяет его заголовок.
+fn result_csv_reader(bytes: &[u8]) -> Result<csv::Reader<Cursor<Vec<u8>>>, ImportError> {
     let decoded = decode_csv(bytes)?;
     let mut reader = ReaderBuilder::new()
         .has_headers(true)
         .flexible(false)
-        .from_reader(decoded.as_bytes());
+        .from_reader(Cursor::new(decoded.into_owned().into_bytes()));
     let headers = reader.headers().map_err(|error| parse_error(1, error))?;
     if !headers.iter().eq(EXPECTED_RESULT_HEADERS) {
         return Err(ImportError::Parse {
@@ -65,16 +131,7 @@ pub(super) fn parse_result_csv(
             ),
         });
     }
-
-    reader
-        .records()
-        .enumerate()
-        .map(|(index, record)| {
-            let source_row = index + 2;
-            let record = record.map_err(|error| parse_error(source_row, error))?;
-            result_student_from_record(source_row, &record, groups)
-        })
-        .collect()
+    Ok(reader)
 }
 
 /// Предпочитает UTF-8, удаляя его BOM, и использует Windows-1251 как fallback.

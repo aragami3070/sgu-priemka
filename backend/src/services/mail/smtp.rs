@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use futures_util::{StreamExt, stream};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{Mailbox, MultiPart, header::ContentType},
+    message::{Mailbox, MultiPart},
     transport::smtp::authentication::Credentials,
 };
 
@@ -106,7 +106,6 @@ impl MailService {
             .from(self.from.clone())
             .to(recipient)
             .subject(self.subject.as_ref())
-            .header(ContentType::TEXT_PLAIN)
             .multipart(MultiPart::alternative_plain_html(
                 mail.plain_text_body,
                 mail.html_body,

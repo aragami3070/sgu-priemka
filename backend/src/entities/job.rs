@@ -13,6 +13,17 @@ pub(crate) enum JobStatus {
         /// Общее количество строк на текущем этапе.
         total: usize,
     },
+    /// Почтовая рассылка выполняется для строк выбранного результата.
+    MailProgress {
+        /// Число строк, обработанных SMTP-сервисом.
+        current: usize,
+        /// Общее число строк результата.
+        total: usize,
+        /// Число писем, принятых SMTP.
+        accepted: usize,
+        /// Число писем, завершившихся ошибкой.
+        failed: usize,
+    },
     /// Pipeline ждёт пакет исправлений конфликтующих логинов.
     AwaitingLoginResolutions {
         /// Все строки, которые конфликтуют на текущей итерации проверки.
@@ -34,6 +45,17 @@ pub(crate) enum JobStatus {
         /// Общее количество записей в выбранном CSV.
         total: usize,
         /// CSV, использованный как источник операции.
+        result: ResultReference,
+    },
+    /// Рассылка по результату завершена.
+    MailCompleted {
+        /// Число писем, принятых SMTP.
+        accepted: usize,
+        /// Число писем, не отправленных SMTP.
+        failed: usize,
+        /// Общее число обработанных строк.
+        total: usize,
+        /// CSV, использованный как источник рассылки.
         result: ResultReference,
     },
     /// Обработка остановлена до появления частичного результата записи в LDAP.
@@ -110,6 +132,7 @@ impl JobStatus {
             self,
             Self::Completed { .. }
                 | Self::Deleted { .. }
+                | Self::MailCompleted { .. }
                 | Self::Failed { .. }
                 | Self::PartialFailure { .. }
         )
@@ -136,6 +159,8 @@ pub(crate) enum JobStage {
     CreatingAccounts,
     /// Удаление учётных записей студентов из LDAP.
     DeletingAccounts,
+    /// Отправка учётных данных по электронной почте.
+    SendingMail,
     /// Атомарное сохранение итогового CSV.
     SavingResult,
 }

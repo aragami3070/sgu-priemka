@@ -1,7 +1,7 @@
 //! Сервис импорта и его последовательные этапы обработки.
 
 mod credentials;
-mod parser;
+pub(crate) mod parser;
 mod validation;
 
 use std::{

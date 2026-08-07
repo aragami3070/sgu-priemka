@@ -10,6 +10,8 @@ mod extractors;
 mod groups;
 /// Методы загрузки CSV и отслеживания прогресса импорта.
 mod imports;
+/// Отправка учётных данных по электронной почте.
+mod mail;
 /// Методы просмотра и скачивания сформированных результатов.
 mod results;
 
@@ -23,7 +25,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(auth::routes())
         .merge(groups::routes())
         .merge(imports::routes())
-        .merge(results::routes());
+        .merge(results::routes())
+        .merge(mail::routes());
 
     Router::new()
         .route("/health", get(health))

@@ -4,6 +4,6 @@ mod batch;
 mod smtp;
 mod template;
 
-pub(crate) use batch::{MailDeliveryResult, MailDeliveryStatus, PreparedMail};
+pub(crate) use batch::{MailDeliveryStatus, PreparedMail};
 pub(crate) use smtp::MailService;
-pub(crate) use template::{CredentialTemplateData, RenderedMail};
+pub(crate) use template::CredentialTemplateData;
