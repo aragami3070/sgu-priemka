@@ -101,7 +101,7 @@ async fn import_events(
     upgrade: WebSocketUpgrade,
 ) -> Result<Response, AppError> {
     let receiver = state.jobs.subscribe(&job_id, &user.username).await?;
-    tracing::info!(%job_id, username = %user.username, "WebSocket событий импорта принят");
+    tracing::debug!(%job_id, username = %user.username, "WebSocket событий импорта принят");
     Ok(upgrade.on_upgrade(move |socket| {
         stream_job_events(socket, job_id, user.username, receiver, state.jobs)
     }))
@@ -173,11 +173,11 @@ async fn stream_job_events(
             };
 
             if let Err(error) = socket.send(Message::Text(message.into())).await {
-                tracing::info!(%job_id, %error, "WebSocket событий импорта отключён");
+                tracing::debug!(%job_id, %error, "WebSocket событий импорта отключён");
                 return;
             }
             if terminal {
-                tracing::info!(%job_id, "терминальный статус задачи импорта отправлен через WebSocket");
+                tracing::debug!(%job_id, "терминальный статус задачи импорта отправлен через WebSocket");
                 let _ = socket.send(Message::Close(None)).await;
                 return;
             }
@@ -187,14 +187,14 @@ async fn stream_job_events(
         tokio::select! {
             changed = receiver.changed() => {
                 if changed.is_err() {
-                    tracing::info!(%job_id, "канал событий задачи импорта закрыт");
+                    tracing::debug!(%job_id, "канал событий задачи импорта закрыт");
                     return;
                 }
                 send_current_status = true;
             }
             incoming = socket.recv() => {
                 let Some(Ok(message)) = incoming else {
-                    tracing::info!(%job_id, "WebSocket событий импорта отключён");
+                    tracing::debug!(%job_id, "WebSocket событий импорта отключён");
                     return;
                 };
                 match message {

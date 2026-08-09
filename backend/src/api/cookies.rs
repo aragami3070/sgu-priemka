@@ -24,7 +24,7 @@ pub(super) fn add_session_cookie(
         .max_age(max_age)
         .build();
 
-    tracing::info!(
+    tracing::debug!(
         cookie_name = SESSION_COOKIE_NAME,
         "cookie сессии добавлена в ответ"
     );
@@ -40,7 +40,7 @@ pub(super) fn remove_session_cookie(jar: CookieJar, secure: bool) -> CookieJar {
         .path(SESSION_COOKIE_PATH)
         .build();
 
-    tracing::info!(
+    tracing::debug!(
         cookie_name = SESSION_COOKIE_NAME,
         "удаление cookie сессии добавлено в ответ"
     );
@@ -49,7 +49,7 @@ pub(super) fn remove_session_cookie(jar: CookieJar, secure: bool) -> CookieJar {
 
 /// Читает UUID сессии из входящей cookie без проверки её существования в хранилище.
 pub(super) fn session_id_from_headers(headers: &HeaderMap) -> Result<SessionId, AppError> {
-    tracing::info!(
+    tracing::debug!(
         cookie_header_count = headers.get_all(axum::http::header::COOKIE).iter().count(),
         "чтение cookie сессии из заголовков запроса"
     );
@@ -59,23 +59,23 @@ pub(super) fn session_id_from_headers(headers: &HeaderMap) -> Result<SessionId, 
 /// Читает UUID сессии из уже извлечённого cookie jar.
 pub(super) fn session_id_from_jar(jar: &CookieJar) -> Result<SessionId, AppError> {
     let Some(cookie) = jar.get(SESSION_COOKIE_NAME) else {
-        tracing::info!(
+        tracing::debug!(
             cookie_name = SESSION_COOKIE_NAME,
             "cookie сессии отсутствует"
         );
         return Err(AppError::Unauthorized);
     };
-    tracing::info!(cookie_name = SESSION_COOKIE_NAME, "cookie сессии найдена");
+    tracing::debug!(cookie_name = SESSION_COOKIE_NAME, "cookie сессии найдена");
 
     let session_id = cookie.value().parse().map_err(|_| {
-        tracing::info!(
+        tracing::debug!(
             cookie_name = SESSION_COOKIE_NAME,
             "cookie сессии не содержит корректный UUID"
         );
         AppError::Unauthorized
     })?;
 
-    tracing::info!(
+    tracing::debug!(
         cookie_name = SESSION_COOKIE_NAME,
         "UUID cookie сессии успешно разобран"
     );

@@ -23,7 +23,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
     ) -> Result<Self, Self::Rejection> {
         let session_id = cookies::session_id_from_headers(&parts.headers)?;
         let session = state.sessions.get(&session_id).await?;
-        tracing::info!(
+        tracing::debug!(
             username = %session.username,
             ldap_identifier = session.kerberos_credentials.identifier(),
             "извлечение аутентифицированного пользователя завершено"

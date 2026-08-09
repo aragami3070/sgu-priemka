@@ -74,7 +74,7 @@ async fn read_groups_upload(mut multipart: Multipart) -> Result<Vec<u8>, AppErro
                 "размер TOML-файла превышает 1 МБ".to_owned(),
             ));
         }
-        tracing::info!(%filename, size = bytes.len(), "TOML-файл групп загружен");
+        tracing::debug!(%filename, size = bytes.len(), "TOML-файл групп загружен");
         upload = Some(bytes.to_vec());
     }
     upload.ok_or_else(|| AppError::InvalidUpload("TOML-файл отсутствует".to_owned()))

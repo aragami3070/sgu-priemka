@@ -55,7 +55,7 @@ impl KerberosService {
         if !cfg!(debug_assertions) {
             cleanup_release_caches(&ccache_dir)?;
         }
-        tracing::info!(
+        tracing::debug!(
             realm = %config.kerberos.realm,
             ccache_dir = %ccache_dir.display(),
             "сервис Kerberos инициализирован"

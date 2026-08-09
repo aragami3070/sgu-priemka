@@ -38,7 +38,7 @@ impl ResultService {
             )
         })?;
 
-        tracing::info!(
+        tracing::debug!(
             output_dir = %config.results.output_dir.display(),
             "хранилище результатов инициализировано"
         );
@@ -150,7 +150,7 @@ impl ResultService {
         }
 
         results.sort_unstable_by_key(|result| Reverse(result.created_at));
-        tracing::info!(result_count = results.len(), "список результатов собран");
+        tracing::debug!(result_count = results.len(), "список результатов собран");
         Ok(results)
     }
 
@@ -170,7 +170,7 @@ impl ResultService {
         let bytes = fs::read(&path)
             .await
             .map_err(|error| storage_error("read result", &path, error))?;
-        tracing::info!(%owner, %filename, size = bytes.len(), "итоговый CSV прочитан");
+        tracing::debug!(%owner, %filename, size = bytes.len(), "итоговый CSV прочитан");
         Ok(bytes)
     }
 
@@ -194,7 +194,7 @@ impl ResultService {
             .await
             .map_err(|error| storage_error("delete result", &path, error))?;
         match fs::remove_dir(&owner_dir).await {
-            Ok(()) => tracing::info!(%owner, "пустой каталог владельца результата удалён"),
+            Ok(()) => tracing::debug!(%owner, "пустой каталог владельца результата удалён"),
             Err(error)
                 if matches!(
                     error.kind(),

@@ -644,7 +644,7 @@ impl ImportService {
                             identity.login.clone_from(login);
                         }
                     }
-                    tracing::info!(
+                    tracing::debug!(
                         %job_id,
                         submitted_logins = resolutions.len(),
                         "пакет замен логинов принят для повторной проверки"
@@ -747,7 +747,7 @@ impl ImportService {
                     },
                 )
                 .await?;
-            tracing::info!(
+            tracing::debug!(
                 %job_id,
                 conflicts = conflicts.len(),
                 "конвейер импорта ожидает пакет разрешения конфликтов логинов"

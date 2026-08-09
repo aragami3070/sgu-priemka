@@ -60,7 +60,7 @@ impl LdapService {
                     Self::operation_error(LdapPhase::RepairUserPrincipalName, false, error)
                 })?;
             Self::check_operation(result, LdapPhase::RepairUserPrincipalName, false)?;
-            tracing::info!(
+            tracing::debug!(
                 identifier = credentials.identifier(),
                 login = %login,
                 user_dn = %user_dn,
@@ -91,7 +91,7 @@ impl LdapService {
         self.authenticate_connection(&mut ldap, credentials).await?;
 
         let filter = Self::student_login_filter(identities);
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             requested_logins = identities.len(),
             "поиск конфликтов логинов студентов в LDAP"
@@ -109,7 +109,7 @@ impl LdapService {
                 value: identity.login.clone(),
             })
             .collect::<Vec<_>>();
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             collisions = collisions.len(),
             "поиск конфликтов логинов студентов в LDAP завершён"
@@ -189,7 +189,7 @@ impl LdapService {
 
         self.ensure_group(&mut ldap, &group_dn, &group_name).await?;
 
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             user_dn = %user_dn,
@@ -201,7 +201,7 @@ impl LdapService {
             .map_err(|error| Self::operation_error(LdapPhase::AddObject, false, error))?;
         Self::check_operation(result, LdapPhase::AddObject, false)?;
 
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             "объект студента в LDAP создан и отключён"
@@ -217,7 +217,7 @@ impl LdapService {
             .await
             .map_err(|error| Self::operation_error(LdapPhase::SetPassword, true, error))?;
         Self::check_operation(result, LdapPhase::SetPassword, true)?;
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             "пароль студента в LDAP установлен"
@@ -240,13 +240,13 @@ impl LdapService {
                 })?;
 
             Self::check_operation(result, LdapPhase::RequirePasswordChange, true)?;
-            tracing::info!(
+            tracing::debug!(
                 identifier = credentials.identifier(),
                 login = %student.identity.login,
                 "обязательная смена пароля при первом входе включена"
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
                 identifier = credentials.identifier(),
                 login = %student.identity.login,
                 "обязательная смена пароля при первом входе отключена настройкой LDAP"
@@ -264,7 +264,7 @@ impl LdapService {
             .await
             .map_err(|error| Self::operation_error(LdapPhase::EnableAccount, true, error))?;
         Self::check_operation(result, LdapPhase::EnableAccount, true)?;
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             "учётная запись студента в LDAP включена"
@@ -281,7 +281,7 @@ impl LdapService {
             .await
             .map_err(|error| Self::operation_error(LdapPhase::AddToGroup, true, error))?;
         Self::check_operation(result, LdapPhase::AddToGroup, true)?;
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             group_dn = %group_dn,
@@ -304,7 +304,7 @@ impl LdapService {
         let mut ldap = self.connect().await?;
         self.authenticate_connection(&mut ldap, credentials).await?;
 
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             user_dn = %user_dn,
@@ -315,7 +315,7 @@ impl LdapService {
             .await
             .map_err(|error| Self::operation_error(LdapPhase::DeleteObject, false, error))?;
         if result.rc == LDAP_NO_SUCH_OBJECT {
-            tracing::info!(
+            tracing::debug!(
                 identifier = credentials.identifier(),
                 login = %student.identity.login,
                 user_dn = %user_dn,
@@ -325,7 +325,7 @@ impl LdapService {
         }
         Self::check_operation(result, LdapPhase::DeleteObject, false)?;
 
-        tracing::info!(
+        tracing::debug!(
             identifier = credentials.identifier(),
             login = %student.identity.login,
             user_dn = %user_dn,
@@ -384,7 +384,7 @@ impl LdapService {
         match entries.len() {
             1 => Ok(()),
             0 => {
-                tracing::info!(%group_dn, "LDAP-группа отсутствует, создаём её");
+                tracing::debug!(%group_dn, "LDAP-группа отсутствует, создаём её");
                 let result = ldap
                     .add(
                         group_dn,

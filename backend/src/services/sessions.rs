@@ -62,7 +62,7 @@ impl SessionService {
             .map(|path| load_sessions(path, &kerberos))
             .unwrap_or_default();
         if let Some(path) = &persistence_path {
-            tracing::info!(
+            tracing::debug!(
                 path = %path.display(),
                 restored_sessions = store.len(),
                 "сохранение отладочных сессий включено"
@@ -118,7 +118,7 @@ impl SessionService {
 
         if session.expires_at <= SystemTime::now() {
             let expired = store.remove(id).ok_or(AppError::Unauthorized)?;
-            tracing::info!(
+            tracing::debug!(
                 username = %expired.username,
                 active_sessions = store.len(),
                 "просроченная локальная сессия удалена во время поиска"

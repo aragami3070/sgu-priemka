@@ -49,7 +49,7 @@ impl JobService {
             .iter()
             .find(|(_, job)| job.owner == owner && job.terminal_at.is_none())
         {
-            tracing::info!(%job_id, %owner, "у владельца уже есть активная задача импорта");
+            tracing::debug!(%job_id, %owner, "у владельца уже есть активная задача импорта");
             return Err(AppError::ImportBusy);
         }
         let job_id = loop {
@@ -80,7 +80,7 @@ impl JobService {
             .iter()
             .find(|(_, job)| job.owner == owner && job.terminal_at.is_none())
             .map(|(job_id, _)| job_id.clone());
-        tracing::info!(
+        tracing::debug!(
             %owner,
             active_job_id = active.as_deref().unwrap_or("none"),
             "поиск активной задачи импорта завершён"
@@ -109,7 +109,7 @@ impl JobService {
             .send(resolutions)
             .await
             .map_err(|_| AppError::Internal)?;
-        tracing::info!(%job_id, %owner, "пакет разрешения конфликтов логинов отправлен");
+        tracing::debug!(%job_id, %owner, "пакет разрешения конфликтов логинов отправлен");
         Ok(())
     }
 
@@ -148,7 +148,7 @@ impl JobService {
             job.terminal_at = Some(Instant::now());
         }
         job.status_sender.send_replace(status);
-        tracing::info!(%job_id, terminal = job.terminal_at.is_some(), "статус задачи импорта опубликован");
+        tracing::debug!(%job_id, terminal = job.terminal_at.is_some(), "статус задачи импорта опубликован");
         Ok(())
     }
 
@@ -165,13 +165,13 @@ impl JobService {
             return Err(AppError::Forbidden);
         }
 
-        tracing::info!(%job_id, %owner, "подписчик задачи импорта зарегистрирован");
+        tracing::debug!(%job_id, %owner, "подписчик задачи импорта зарегистрирован");
         Ok(job.status_sender.subscribe())
     }
 
     /// Удаляет terminal-задачи через десять минут после завершения.
     pub(crate) async fn cleanup_expired(&self) {
-        tracing::info!("начинаем очистку просроченных задач импорта");
+        tracing::debug!("начинаем очистку просроченных задач импорта");
         let now = Instant::now();
         let mut store = self.store.write().await;
         let before = store.len();
@@ -179,7 +179,7 @@ impl JobService {
             job.terminal_at
                 .is_none_or(|terminal_at| now.duration_since(terminal_at) < TERMINAL_JOB_TTL)
         });
-        tracing::info!(
+        tracing::debug!(
             jobs_before = before,
             jobs_after = store.len(),
             removed_jobs = before - store.len(),
