@@ -181,6 +181,8 @@ pub(crate) struct LdapConfig {
     pub(crate) users_container_dn: String,
     /// Distinguished Name группы пользователей, которым разрешён вход.
     pub(crate) csit_admins_group_dn: String,
+    /// Нужно ли принудительно требовать смену временного пароля при первом входе.
+    pub(crate) force_password_change: bool,
 }
 
 impl LdapConfig {
@@ -198,6 +200,7 @@ impl LdapConfig {
             auth_search_base_dn: required("LDAP_AUTH_SEARCH_BASE_DN")?,
             users_container_dn: required("LDAP_USERS_CONTAINER_DN")?,
             csit_admins_group_dn: required("LDAP_CSIT_ADMINS_GROUP_DN")?,
+            force_password_change: parse_or("LDAP_FORCE_PASSWORD_CHANGE", false, "true или false")?,
         })
     }
 }
@@ -402,6 +405,7 @@ mod tests {
         "LDAP_AUTH_SEARCH_BASE_DN",
         "LDAP_USERS_CONTAINER_DN",
         "LDAP_CSIT_ADMINS_GROUP_DN",
+        "LDAP_FORCE_PASSWORD_CHANGE",
         "KERBEROS_REALM",
         "KERBEROS_CCACHE_DIR",
         "RESULT_OUTPUT_DIR",
@@ -533,6 +537,7 @@ mod tests {
             PathBuf::from("/run/ad-provisioner/krb5")
         );
         assert_eq!(config.salt, " password salt ");
+        assert!(!config.ldap.force_password_change);
     }
 
     #[test]
@@ -549,6 +554,16 @@ mod tests {
         assert!(config.cookie_secure);
         assert_eq!(config.session_ttl, Duration::from_secs(3600));
         assert_eq!(config.results.output_dir, PathBuf::from("output"));
+    }
+
+    #[test]
+    fn parses_enabled_force_password_change_setting() {
+        let _lock = lock_environment();
+        let _environment = TestEnvironment::new(&[("LDAP_FORCE_PASSWORD_CHANGE", "true")]);
+
+        let config = Config::from_env().expect("конфигурация должна быть корректной");
+
+        assert!(config.ldap.force_password_change);
     }
 
     #[test]

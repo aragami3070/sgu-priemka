@@ -73,15 +73,9 @@ impl MailService {
             }
         };
         let mut builder = builder.port(port).timeout(Some(timeout));
-        match (
-            config.smtp_username.as_ref(),
-            config.smtp_password.as_ref(),
-        ) {
+        match (config.smtp_username.as_ref(), config.smtp_password.as_ref()) {
             (Some(username), Some(password)) => {
-                builder = builder.credentials(Credentials::new(
-                    username.clone(),
-                    password.clone(),
-                ));
+                builder = builder.credentials(Credentials::new(username.clone(), password.clone()));
             }
             // Валидно для relay, который доверяет IP приложения.
             (None, None) => {}
@@ -145,10 +139,7 @@ impl MailService {
 
     /// Обновляет состояние рассылки после завершения.
     pub(crate) async fn finish_delivery(&self, key: &str, status: MailBatchStatus) {
-        self.deliveries
-            .write()
-            .await
-            .insert(key.to_owned(), status);
+        self.deliveries.write().await.insert(key.to_owned(), status);
     }
 
     /// Отправляет одно заранее подготовленное письмо.

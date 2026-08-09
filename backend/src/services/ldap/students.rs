@@ -223,26 +223,35 @@ impl LdapService {
             "пароль студента в LDAP установлен"
         );
 
-        // Требуем сменить временный пароль при первом входе.
-        let result = ldap
-            .modify(
-                &user_dn,
-                vec![Mod::Replace(
-                    b"pwdLastSet".to_vec(),
-                    HashSet::from([b"0".to_vec()]),
-                )],
-            )
-            .await
-            .map_err(|error| {
-                Self::operation_error(LdapPhase::RequirePasswordChange, true, error)
-            })?;
+        if self.config.ldap.force_password_change {
+            // Требуем сменить временный пароль при первом входе только при
+            // явно включённой настройке LDAP_FORCE_PASSWORD_CHANGE.
+            let result = ldap
+                .modify(
+                    &user_dn,
+                    vec![Mod::Replace(
+                        b"pwdLastSet".to_vec(),
+                        HashSet::from([b"0".to_vec()]),
+                    )],
+                )
+                .await
+                .map_err(|error| {
+                    Self::operation_error(LdapPhase::RequirePasswordChange, true, error)
+                })?;
 
-        Self::check_operation(result, LdapPhase::RequirePasswordChange, true)?;
-        tracing::info!(
-            identifier = credentials.identifier(),
-            login = %student.identity.login,
-            "обязательная смена пароля при первом входе включена"
-        );
+            Self::check_operation(result, LdapPhase::RequirePasswordChange, true)?;
+            tracing::info!(
+                identifier = credentials.identifier(),
+                login = %student.identity.login,
+                "обязательная смена пароля при первом входе включена"
+            );
+        } else {
+            tracing::info!(
+                identifier = credentials.identifier(),
+                login = %student.identity.login,
+                "обязательная смена пароля при первом входе отключена настройкой LDAP"
+            );
+        }
 
         let result = ldap
             .modify(

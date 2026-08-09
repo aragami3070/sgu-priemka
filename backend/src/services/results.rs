@@ -423,6 +423,7 @@ mod tests {
                 auth_search_base_dn: "DC=main,DC=sgu,DC=ru".to_owned(),
                 users_container_dn: "OU=Users,DC=main,DC=sgu,DC=ru".to_owned(),
                 csit_admins_group_dn: "CN=Admins,DC=main,DC=sgu,DC=ru".to_owned(),
+                force_password_change: true,
             },
             kerberos: KerberosConfig {
                 realm: "MAIN.SGU.RU".to_owned(),
