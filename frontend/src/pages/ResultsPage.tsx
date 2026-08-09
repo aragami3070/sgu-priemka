@@ -12,6 +12,7 @@ import {
 import {
   Alert,
   AlertTitle,
+  Backdrop,
   Box,
   Button,
   CircularProgress,
@@ -21,6 +22,7 @@ import {
   DialogContentText,
   DialogTitle,
   IconButton,
+  LinearProgress,
   Snackbar,
   Table,
   TableBody,
@@ -86,6 +88,7 @@ export function ResultsPage() {
   const [creationSuccess, setCreationSuccess] = useState<string | null>(null);
   const [deletionSuccess, setDeletionSuccess] = useState<string | null>(null);
   const [mailingKey, setMailingKey] = useState<string | null>(null);
+  const [mailStatus, setMailStatus] = useState<JobStatus | null>(null);
   const [mailSuccess, setMailSuccess] = useState<string | null>(null);
   const creationSocketRef = useRef<WebSocket | null>(null);
   const deletionSocketRef = useRef<WebSocket | null>(null);
@@ -272,6 +275,9 @@ export function ResultsPage() {
       socket.onmessage = (event) => {
         try {
           const nextStatus = JSON.parse(String(event.data)) as JobStatus;
+          if (nextStatus.type === "progress") {
+            setCreationStatus(nextStatus);
+          }
           if (
             nextStatus.type === "deleted" ||
             // Совместимость с backend, собранным до появления отдельного
@@ -280,6 +286,7 @@ export function ResultsPage() {
           ) {
             terminalReceived = true;
             setDeletingAccountsKey(null);
+            setCreationStatus(null);
             const count =
               nextStatus.type === "deleted"
                 ? nextStatus.deleted
@@ -296,10 +303,12 @@ export function ResultsPage() {
           } else if (nextStatus.type === "failed") {
             terminalReceived = true;
             setDeletingAccountsKey(null);
+            setCreationStatus(null);
             setError(nextStatus.message);
           } else if (nextStatus.type === "partial_failure") {
             terminalReceived = true;
             setDeletingAccountsKey(null);
+            setCreationStatus(null);
             setError(
               `Удаление остановлено на строке ${nextStatus.failed_row}.`,
             );
@@ -314,6 +323,7 @@ export function ResultsPage() {
         if (!terminalReceived) {
           setError("Связь с задачей удаления пользователей потеряна.");
           setDeletingAccountsKey(null);
+          setCreationStatus(null);
         }
         deletionSocketRef.current = null;
       };
@@ -332,6 +342,7 @@ export function ResultsPage() {
     const key = resultKey(result);
     if (mailingKey || creatingKey || deletingAccountsKey) return;
     setMailingKey(key);
+    setMailStatus(null);
     setMailSuccess(null);
     setError(null);
     const previousSocket = mailSocketRef.current;
@@ -345,20 +356,25 @@ export function ResultsPage() {
       socket.onmessage = (event) => {
         try {
           const nextStatus = JSON.parse(String(event.data)) as JobStatus;
-          if (nextStatus.type === "mail_completed") {
+          if (nextStatus.type === "mail_progress") {
+            setMailStatus(nextStatus);
+          } else if (nextStatus.type === "mail_completed") {
             terminalReceived = true;
             setMailingKey(null);
+            setMailStatus(null);
             setMailSuccess(
               `Рассылка завершена: принято ${nextStatus.accepted}, ошибок ${nextStatus.failed}.`,
             );
           } else if (nextStatus.type === "failed") {
             terminalReceived = true;
             setMailingKey(null);
+            setMailStatus(null);
             setError(nextStatus.message);
           }
         } catch {
           terminalReceived = true;
           setMailingKey(null);
+          setMailStatus(null);
           setError("Backend прислал некорректный статус рассылки.");
           socket.close();
         }
@@ -370,6 +386,7 @@ export function ResultsPage() {
             setError("Связь с задачей рассылки потеряна.");
           }
           setMailingKey(null);
+          setMailStatus(null);
           mailSocketRef.current = null;
         }, 0);
       };
@@ -388,6 +405,28 @@ export function ResultsPage() {
     creationStatus?.type === "awaiting_login_resolutions"
       ? creationStatus
       : null;
+
+  // --- Вычисление прогресса создания/удаления аккаунтов ---
+  const accountProgress =
+    creationStatus?.type === "progress" ? creationStatus : null;
+  const accountProgressValue =
+    accountProgress && accountProgress.total > 0
+      ? Math.min(100, (accountProgress.current / accountProgress.total) * 100)
+      : undefined;
+  const isAccountOperationActive =
+    (creatingKey !== null || deletingAccountsKey !== null) &&
+    creationConflictStatus === null;
+
+  // --- Вычисление прогресса рассылки ---
+  const mailProgressData =
+    mailStatus?.type === "mail_progress" ? mailStatus : null;
+  const mailProgressValue =
+    mailProgressData && mailProgressData.total > 0
+      ? Math.min(
+          100,
+          (mailProgressData.current / mailProgressData.total) * 100,
+        )
+      : undefined;
 
   return (
     <Box className="page-section">
@@ -682,6 +721,97 @@ export function ResultsPage() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Модалка прогресса создания/удаления аккаунтов */}
+      <Backdrop
+        className="import-backdrop"
+        open={isAccountOperationActive}
+      >
+        <Box className="import-progress" role="status" aria-live="polite">
+          <CircularProgress size={42} />
+          <Typography component="h2" variant="h2">
+            {deletingAccountsKey
+              ? "Удаление учётных записей"
+              : accountProgress
+                ? accountProgress.stage === "creating_accounts"
+                  ? "Создание учётных записей"
+                  : accountProgress.stage === "deleting_accounts"
+                    ? "Удаление учётных записей"
+                    : accountProgress.stage === "checking_ldap"
+                      ? "Проверка LDAP"
+                      : accountProgress.stage === "generating_passwords"
+                        ? "Генерация паролей"
+                        : accountProgress.stage === "saving_result"
+                          ? "Сохранение результата"
+                          : "Обработка"
+                : "Подключение к задаче"}
+          </Typography>
+          {accountProgressValue === undefined ? (
+            <LinearProgress className="import-progress__bar" />
+          ) : (
+            <LinearProgress
+              className="import-progress__bar"
+              variant="determinate"
+              value={accountProgressValue}
+            />
+          )}
+          {accountProgress && accountProgress.total > 0 && (
+            <Typography color="text.secondary" variant="body2">
+              {accountProgress.current} из {accountProgress.total}
+            </Typography>
+          )}
+        </Box>
+      </Backdrop>
+
+      {/* Модалка прогресса рассылки */}
+      <Backdrop
+        className="import-backdrop"
+        open={mailingKey !== null}
+      >
+        <Box className="import-progress" role="status" aria-live="polite">
+          <CircularProgress size={42} />
+          <Typography component="h2" variant="h2">
+            Отправка учётных данных
+          </Typography>
+          {mailProgressValue === undefined ? (
+            <LinearProgress className="import-progress__bar" />
+          ) : (
+            <LinearProgress
+              className="import-progress__bar"
+              variant="determinate"
+              value={mailProgressValue}
+            />
+          )}
+          {mailProgressData ? (
+            <Box sx={{ textAlign: "center" }}>
+              <Typography color="text.secondary" variant="body2">
+                {mailProgressData.current} из {mailProgressData.total}
+              </Typography>
+              <Typography
+                color="text.secondary"
+                variant="caption"
+                sx={{ display: "block", mt: 0.5 }}
+              >
+                Принято: {mailProgressData.accepted}
+                {mailProgressData.failed > 0 && (
+                  <Typography
+                    component="span"
+                    variant="caption"
+                    color="error"
+                    sx={{ ml: 1 }}
+                  >
+                    Ошибки: {mailProgressData.failed}
+                  </Typography>
+                )}
+              </Typography>
+            </Box>
+          ) : (
+            <Typography color="text.secondary" variant="body2">
+              Подготовка к отправке…
+            </Typography>
+          )}
+        </Box>
+      </Backdrop>
 
       <Snackbar
         open={creationSuccess !== null}

@@ -19,6 +19,9 @@ pub(crate) enum AppError {
     /// Глобальная блокировка уже занята другим импортом в LDAP.
     #[error("another import is already running")]
     ImportBusy,
+    /// Рассылка для указанного CSV уже выполняется или завершена.
+    #[error("mail delivery already started for this result")]
+    MailDeliveryBusy,
     /// Загруженный multipart-файл отсутствует или имеет неверную структуру.
     #[error("invalid upload: {0}")]
     InvalidUpload(String),
@@ -48,6 +51,10 @@ impl IntoResponse for AppError {
             Self::ImportBusy => (
                 StatusCode::CONFLICT,
                 "another import is already running".to_owned(),
+            ),
+            Self::MailDeliveryBusy => (
+                StatusCode::CONFLICT,
+                "mail delivery already started for this result".to_owned(),
             ),
             Self::InvalidUpload(message) => (StatusCode::BAD_REQUEST, message),
             Self::Validation(message) => (StatusCode::UNPROCESSABLE_ENTITY, message),

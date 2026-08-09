@@ -4,13 +4,14 @@ use axum::{
     http::StatusCode,
     routing::post,
 };
+use futures_util::StreamExt;
 
 use crate::{
     api::extractors::AuthenticatedUser,
     entities::job::{JobStage, JobStatus, ResultReference},
     services::{
         import::parser::{MailCredentialRow, parse_credentials_csv},
-        mail::{CredentialTemplateData, MailDeliveryStatus, PreparedMail},
+        mail::{CredentialTemplateData, MailBatchStatus, MailDeliveryStatus, PreparedMail},
     },
     state::AppState,
 };
@@ -39,6 +40,14 @@ async fn send_credentials(
     // Проверяем существование файла до создания задачи, чтобы не оставлять
     // задачу, которая заведомо завершится из-за отсутствующего результата.
     state.results.read(&owner, &filename).await?;
+
+    // Атомарно проверяем и переводим рассылку в Running.
+    state
+        .mail
+        .try_start_delivery(&format!("{owner}/{filename}"))
+        .await
+        .map_err(|_| crate::errors::AppError::MailDeliveryBusy)?;
+
     let job_id = state
         .jobs
         .create(
@@ -66,6 +75,7 @@ async fn send_credentials(
 
 /// Выполняет чтение результата, подготовку писем и batch-отправку через SMTP.
 async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filename: String) {
+    let key = format!("{owner}/{filename}");
     let result = ResultReference {
         owner: owner.clone(),
         filename: filename.clone(),
@@ -74,6 +84,10 @@ async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filen
         Ok(students) => students,
         Err(message) => {
             finish_failure(&state, &job_id, message).await;
+            state
+                .mail
+                .finish_delivery(&key, MailBatchStatus::Failed)
+                .await;
             return;
         }
     };
@@ -83,6 +97,10 @@ async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filen
         Ok(mails) => mails,
         Err(message) => {
             finish_failure(&state, &job_id, message).await;
+            state
+                .mail
+                .finish_delivery(&key, MailBatchStatus::Failed)
+                .await;
             return;
         }
     };
@@ -100,13 +118,22 @@ async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filen
         .await
         .is_err()
     {
+        state
+            .mail
+            .finish_delivery(&key, MailBatchStatus::Failed)
+            .await;
         return;
     }
 
-    let delivery_results = state.mail.send_batch(mails).await;
+    // Потребляем stream по мере завершения каждой SMTP-операции,
+    // публикуя WebSocket progress в реальном времени.
+    let mut deliveries = state.mail.send_batch_stream(mails);
     let mut accepted = 0;
     let mut failed = 0;
-    for (current, delivery) in delivery_results.iter().enumerate() {
+    let mut current = 0;
+
+    while let Some(delivery) = deliveries.next().await {
+        current += 1;
         match &delivery.status {
             MailDeliveryStatus::AcceptedBySmtp => accepted += 1,
             MailDeliveryStatus::Failed { retryable, reason } => {
@@ -126,7 +153,7 @@ async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filen
             .publish(
                 &job_id,
                 JobStatus::MailProgress {
-                    current: current + 1,
+                    current,
                     total,
                     accepted,
                     failed,
@@ -135,9 +162,21 @@ async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filen
             .await
         {
             tracing::warn!(%job_id, %error, "не удалось опубликовать прогресс рассылки");
+            state
+                .mail
+                .finish_delivery(&key, MailBatchStatus::Failed)
+                .await;
             return;
         }
     }
+
+    let batch_status = if failed == 0 {
+        MailBatchStatus::Completed
+    } else if accepted == 0 {
+        MailBatchStatus::Failed
+    } else {
+        MailBatchStatus::PartiallyFailed
+    };
 
     let status = JobStatus::MailCompleted {
         accepted,
@@ -150,6 +189,7 @@ async fn run_mail_delivery(state: AppState, job_id: String, owner: String, filen
     } else {
         tracing::info!(%job_id, accepted, failed, total, "рассылка учётных данных завершена");
     }
+    state.mail.finish_delivery(&key, batch_status).await;
 }
 
 /// Читает выбранный CSV и преобразует его в записи с credentials.

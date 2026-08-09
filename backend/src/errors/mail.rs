@@ -25,12 +25,22 @@ pub(crate) enum MailError {
         /// Описание причины ошибки шаблонизатора.
         reason: String,
     },
-    /// SMTP-аутентификация завершилась ошибкой.
-    #[error("SMTP-аутентификация завершилась ошибкой")]
-    AuthenticationFailed,
+    /// SMTP-конфигурация содержит противоречивые значения.
+    #[error("некорректная SMTP-конфигурация: {0}")]
+    InvalidConfig(String),
+    /// Проверка SMTP-соединения завершилась неуспешно.
+    #[error("проверка SMTP-соединения не пройдена")]
+    ConnectionTestFailed,
     /// Не удалось подключиться к SMTP.
     #[error("не удалось подключиться к SMTP")]
     ConnectionFailed {
+        /// Исходная ошибка SMTP-транспорта.
+        #[source]
+        source: lettre::transport::smtp::Error,
+    },
+    /// TLS-соединение не удалось установить.
+    #[error("TLS-соединение не удалось установить")]
+    TlsFailure {
         /// Исходная ошибка SMTP-транспорта.
         #[source]
         source: lettre::transport::smtp::Error,
@@ -52,4 +62,14 @@ pub(crate) enum MailError {
         #[source]
         source: lettre::transport::smtp::Error,
     },
+}
+
+impl MailError {
+    /// Единственный источник истины: нужно ли повторять SMTP-операцию.
+    pub(crate) fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::TemporaryFailure { .. } | Self::Timeout | Self::ConnectionFailed { .. }
+        )
+    }
 }

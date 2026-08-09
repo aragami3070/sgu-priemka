@@ -18,7 +18,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load()?;
     let listen_addr = config.listen_addr;
     let state = AppState::new(config)?;
+
     spawn_cleanup_task(state.clone());
+    state.mail.test_connection().await?;
+
     let app = api::router(state);
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
 

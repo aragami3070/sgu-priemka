@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{StreamExt, stream};
 use lettre::{
@@ -6,6 +6,7 @@ use lettre::{
     message::{Mailbox, MultiPart},
     transport::smtp::authentication::Credentials,
 };
+use tokio::sync::RwLock;
 
 use crate::{
     config::{MailConfig, SmtpSecurity},
@@ -17,6 +18,19 @@ use super::{
     template::{CredentialTemplateData, RenderedMail, TemplateService},
 };
 
+/// Состояние рассылки для конкретного CSV-результата.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MailBatchStatus {
+    /// Рассылка выполняется.
+    Running,
+    /// Все письма приняты SMTP.
+    Completed,
+    /// Часть писем не доставлена.
+    PartiallyFailed,
+    /// Рассылка полностью провалилась.
+    Failed,
+}
+
 /// Переиспользуемый SMTP-сервис с общим connection pool.
 #[derive(Clone)]
 pub(crate) struct MailService {
@@ -26,6 +40,8 @@ pub(crate) struct MailService {
     templates: TemplateService,
     max_concurrent: usize,
     timeout: Duration,
+    /// Трекер статуса рассылки по ключу `"{owner}/{filename}"`.
+    deliveries: Arc<RwLock<HashMap<String, MailBatchStatus>>>,
 }
 
 impl MailService {
@@ -57,10 +73,24 @@ impl MailService {
             }
         };
         let mut builder = builder.port(port).timeout(Some(timeout));
-        if let (Some(username), Some(password)) =
-            (config.smtp_username.clone(), config.smtp_password.clone())
-        {
-            builder = builder.credentials(Credentials::new(username, password));
+        match (
+            config.smtp_username.as_ref(),
+            config.smtp_password.as_ref(),
+        ) {
+            (Some(username), Some(password)) => {
+                builder = builder.credentials(Credentials::new(
+                    username.clone(),
+                    password.clone(),
+                ));
+            }
+            // Валидно для relay, который доверяет IP приложения.
+            (None, None) => {}
+            // Ошибка конфигурации: задана только часть credentials.
+            _ => {
+                return Err(MailError::InvalidConfig(
+                    "SMTP username and password must be configured together".into(),
+                ));
+            }
         }
         Ok(Self {
             transport: builder.build(),
@@ -69,6 +99,7 @@ impl MailService {
             templates: TemplateService::new()?,
             max_concurrent: config.max_concurrent,
             timeout,
+            deliveries: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -81,7 +112,7 @@ impl MailService {
         if connected {
             Ok(())
         } else {
-            Err(MailError::AuthenticationFailed)
+            Err(MailError::ConnectionTestFailed)
         }
     }
 
@@ -91,6 +122,33 @@ impl MailService {
         data: CredentialTemplateData<'_>,
     ) -> Result<RenderedMail, MailError> {
         self.templates.render(data)
+    }
+
+    /// Атомарно пытается перевести рассылку в `Running`.
+    ///
+    /// Допускает повторный запуск только если предыдущая завершилась ошибкой.
+    pub(crate) async fn try_start_delivery(&self, key: &str) -> Result<(), MailError> {
+        let mut deliveries = self.deliveries.write().await;
+        match deliveries.get(key) {
+            None | Some(MailBatchStatus::Failed) | Some(MailBatchStatus::PartiallyFailed) => {
+                deliveries.insert(key.to_owned(), MailBatchStatus::Running);
+                Ok(())
+            }
+            Some(MailBatchStatus::Running) => Err(MailError::InvalidConfig(
+                "mail delivery is already running for this result".into(),
+            )),
+            Some(MailBatchStatus::Completed) => Err(MailError::InvalidConfig(
+                "mail delivery already completed for this result".into(),
+            )),
+        }
+    }
+
+    /// Обновляет состояние рассылки после завершения.
+    pub(crate) async fn finish_delivery(&self, key: &str, status: MailBatchStatus) {
+        self.deliveries
+            .write()
+            .await
+            .insert(key.to_owned(), status);
     }
 
     /// Отправляет одно заранее подготовленное письмо.
@@ -127,7 +185,14 @@ impl MailService {
         } else if source.is_permanent() {
             MailError::PermanentFailure { source }
         } else {
-            MailError::ConnectionFailed { source }
+            // Проверяем TLS-ошибку по Debug-представлению, потому что lettre
+            // не предоставляет отдельного метода для TLS classification.
+            let debug = format!("{source:?}");
+            if debug.contains("Tls") || debug.contains("tls") || debug.contains("certificate") {
+                MailError::TlsFailure { source }
+            } else {
+                MailError::ConnectionFailed { source }
+            }
         }
     }
 
@@ -137,7 +202,7 @@ impl MailService {
         loop {
             match self.send(mail.clone()).await {
                 Ok(()) => return Ok(()),
-                Err(error) if is_retryable(&error) && attempt < 3 => {
+                Err(error) if error.is_retryable() && attempt < 3 => {
                     let delay = [1, 3, 10][attempt];
                     attempt += 1;
                     tracing::warn!(attempt, delay_seconds = delay, error = ?error, "повторная отправка письма после временной ошибки");
@@ -148,33 +213,31 @@ impl MailService {
         }
     }
 
-    /// Отправляет пакет писем с ограничением количества параллельных операций.
-    pub(crate) async fn send_batch(&self, mails: Vec<PreparedMail>) -> Vec<MailDeliveryResult> {
+    /// Возвращает stream результатов отправки с ограничением параллелизма.
+    ///
+    /// Каждый результат возвращается немедленно после завершения SMTP-операции,
+    /// позволяя orchestration-слою публиковать WebSocket progress в реальном времени.
+    pub(crate) fn send_batch_stream(
+        &self,
+        mails: Vec<PreparedMail>,
+    ) -> impl futures_util::Stream<Item = MailDeliveryResult> + Send + 'static {
         let limit = self.max_concurrent.max(1);
-        stream::iter(mails.into_iter().map(|mail| async move {
-            let row_id = mail.row_id.clone();
-            let email = mail.recipient.clone();
-            match self.send_with_retry(mail).await {
-                Ok(()) => MailDeliveryResult {
-                    row_id,
-                    email,
-                    status: MailDeliveryStatus::AcceptedBySmtp,
-                },
-                Err(error) => (row_id, email, error).into(),
+        let service = self.clone();
+        stream::iter(mails.into_iter().map(move |mail| {
+            let svc = service.clone();
+            async move {
+                let row_id = mail.row_id.clone();
+                let email = mail.recipient.clone();
+                match svc.send_with_retry(mail).await {
+                    Ok(()) => MailDeliveryResult {
+                        row_id,
+                        email,
+                        status: MailDeliveryStatus::AcceptedBySmtp,
+                    },
+                    Err(error) => (row_id, email, error).into(),
+                }
             }
         }))
         .buffer_unordered(limit)
-        .collect()
-        .await
     }
-}
-
-/// Возвращает, нужно ли повторять конкретную SMTP-операцию.
-fn is_retryable(error: &MailError) -> bool {
-    matches!(
-        error,
-        MailError::ConnectionFailed { .. }
-            | MailError::TemporaryFailure { .. }
-            | MailError::Timeout
-    )
 }

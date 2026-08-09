@@ -1,7 +1,7 @@
 use crate::errors::MailError;
 
 /// Письмо, подготовленное orchestration-слоем до передачи SMTP-сервису.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub(crate) struct PreparedMail {
     /// Стабильный идентификатор строки исходного CSV.
     pub(crate) row_id: String,
@@ -40,12 +40,7 @@ pub(crate) enum MailDeliveryStatus {
 
 impl From<(String, String, MailError)> for MailDeliveryResult {
     fn from((row_id, email, error): (String, String, MailError)) -> Self {
-        let retryable = matches!(
-            error,
-            MailError::ConnectionFailed { .. }
-                | MailError::TemporaryFailure { .. }
-                | MailError::Timeout
-        );
+        let retryable = error.is_retryable();
         Self {
             row_id,
             email,

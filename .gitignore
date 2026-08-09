@@ -4,5 +4,5 @@ target/
 .kerberos-cache/
 *summary.md
 output/
-test.csv
+*.csv
 groups.toml
