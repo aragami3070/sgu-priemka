@@ -14,6 +14,7 @@ mod imports;
 mod mail;
 /// Методы просмотра и скачивания сформированных результатов.
 mod results;
+mod upn;
 
 use axum::{Router, http::StatusCode, routing::get};
 
@@ -26,7 +27,8 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(groups::routes())
         .merge(imports::routes())
         .merge(results::routes())
-        .merge(mail::routes());
+        .merge(mail::routes())
+        .merge(upn::routes());
 
     Router::new()
         .route("/health", get(health))

@@ -1,3 +1,5 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
 use crate::{
     entities::{
         auth::KerberosCredentials,
@@ -16,6 +18,63 @@ use super::LdapService;
 const LDAP_NO_SUCH_OBJECT: u32 = 32;
 
 impl LdapService {
+    /// Исправляет userPrincipalName для записей JSON-отчёта от имени сессии.
+    pub(crate) async fn repair_user_principal_names(
+        &self,
+        credentials: &KerberosCredentials,
+        entries: &[crate::entities::ldap::UpnRepairEntry],
+    ) -> Result<Vec<crate::entities::ldap::UpnRepairResult>, LdapError> {
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut ldap = self.connect().await?;
+        self.authenticate_connection(&mut ldap, credentials).await?;
+        let mut repaired = Vec::with_capacity(entries.len());
+
+        for entry in entries {
+            let login = entry.sam_account_name.trim();
+            if login.is_empty() {
+                return Err(LdapError::Operation {
+                    phase: LdapPhase::RepairUserPrincipalName,
+                    possibly_created: false,
+                    message: "sAMAccountName is empty".to_owned(),
+                });
+            }
+            let user_dn = decode_report_dn(&entry.dn).ok_or(LdapError::Operation {
+                phase: LdapPhase::RepairUserPrincipalName,
+                possibly_created: false,
+                message: "invalid distinguishedName in JSON report".to_owned(),
+            })?;
+            let user_principal_name = format!("{login}@main.sgu.ru");
+            let result = ldap
+                .modify(
+                    &user_dn,
+                    vec![Mod::Replace(
+                        b"userPrincipalName".to_vec(),
+                        HashSet::from([user_principal_name.as_bytes().to_vec()]),
+                    )],
+                )
+                .await
+                .map_err(|error| {
+                    Self::operation_error(LdapPhase::RepairUserPrincipalName, false, error)
+                })?;
+            Self::check_operation(result, LdapPhase::RepairUserPrincipalName, false)?;
+            tracing::info!(
+                identifier = credentials.identifier(),
+                login = %login,
+                user_dn = %user_dn,
+                user_principal_name = %user_principal_name,
+                "userPrincipalName исправлен"
+            );
+            repaired.push(crate::entities::ldap::UpnRepairResult {
+                sam_account_name: login.to_owned(),
+                user_principal_name,
+            });
+        }
+        Ok(repaired)
+    }
+
     /// Ищет в LDAP значения, сформированные из загруженных строк.
     ///
     /// Операция использует credentials пользователя, запустившего импорт.
@@ -460,4 +519,16 @@ fn validate_dn_value(value: &str, field: &'static str) -> Result<(), LdapError> 
         });
     }
     Ok(())
+}
+
+/// Декодирует DN из текущего JSON-отчёта или принимает обычный DN.
+fn decode_report_dn(value: &str) -> Option<String> {
+    if !value.contains(',')
+        && let Ok(decoded) = STANDARD.decode(value)
+        && let Ok(decoded) = String::from_utf8(decoded)
+        && decoded.contains('=')
+    {
+        return Some(decoded);
+    }
+    (!value.trim().is_empty() && value.contains('=')).then(|| value.to_owned())
 }

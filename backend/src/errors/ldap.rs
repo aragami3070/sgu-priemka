@@ -29,6 +29,8 @@ pub(crate) enum LdapPhase {
     AddToGroup,
     /// Удаление учётной записи из LDAP.
     DeleteObject,
+    /// Исправление userPrincipalName существующей учётной записи.
+    RepairUserPrincipalName,
 }
 
 /// Единая ошибка LDAP-аутентификации и операций с учётными записями.
