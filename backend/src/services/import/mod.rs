@@ -47,8 +47,11 @@ fn ldap_failure_details(error: &LdapError) -> (String, bool) {
     }
 }
 
-/// Формирует сообщение обо всех конфликтах одной строки внутри CSV.
-fn csv_conflict_message(identity: &PreparedIdentity, identities: &[PreparedIdentity]) -> String {
+/// Формирует сведения обо всех конфликтах одной строки внутри CSV.
+fn csv_conflict_details(
+    identity: &PreparedIdentity,
+    identities: &[PreparedIdentity],
+) -> (bool, bool, String) {
     let full_name = identity.full_name().to_lowercase();
     let duplicate_login = identities
         .iter()
@@ -73,7 +76,7 @@ fn csv_conflict_message(identity: &PreparedIdentity, identities: &[PreparedIdent
             identity.full_name()
         ));
     }
-    messages.join("; ")
+    (duplicate_login, duplicate_full_name, messages.join("; "))
 }
 
 /// Проверяет исправленное ФИО и применяет его к исходным полям студента.
@@ -641,11 +644,15 @@ impl ImportService {
                 .iter()
                 .map(|&index| {
                     let identity = &identities[index];
+                    let (login_conflict, full_name_conflict, message) =
+                        csv_conflict_details(identity, identities);
                     LoginConflict {
                         row: identity.source.source_row,
                         full_name: identity.full_name(),
                         login: identity.login.clone(),
-                        message: csv_conflict_message(identity, identities),
+                        message,
+                        login_conflict,
+                        full_name_conflict,
                     }
                 })
                 .collect();
@@ -723,16 +730,20 @@ impl ImportService {
                         full_name: identity.full_name(),
                         login: identity.login.clone(),
                         message: String::new(),
+                        login_conflict: false,
+                        full_name_conflict: false,
                     });
                 if !entry.message.is_empty() {
                     entry.message.push_str("; ");
                 }
                 if collision.attribute == "cn" {
+                    entry.full_name_conflict = true;
                     entry.message.push_str(&format!(
                         "Полное имя `{}` уже существует в LDAP",
                         collision.value
                     ));
                 } else {
+                    entry.login_conflict = true;
                     entry.message.push_str(&format!(
                         "Логин `{}` уже существует в LDAP",
                         collision.value
@@ -839,7 +850,7 @@ impl ImportService {
                     continue;
                 }
                 let Some((login, submitted_full_name)) = submitted.remove(&conflict.row) else {
-                    conflict.message = if conflict.message.contains("Полное имя") {
+                    conflict.message = if conflict.full_name_conflict {
                         "Введите логин и исправленное ФИО для этой строки".to_owned()
                     } else {
                         "Введите логин для этой строки".to_owned()
@@ -865,7 +876,7 @@ impl ImportService {
                                     None
                                 }
                             },
-                            None if conflict.message.contains("Полное имя") => {
+                            None if conflict.full_name_conflict => {
                                 conflict.message = "Введите исправленное ФИО".to_owned();
                                 has_errors = true;
                                 None

@@ -22,6 +22,11 @@ interface LoginConflictResolverProps {
   onError: (message: string | null) => void;
 }
 
+type ResolutionError = {
+  login?: string;
+  fullName?: string;
+};
+
 /** Общая таблица исправления конфликтующих логинов для import-job WebSocket. */
 export function LoginConflictResolver({
   conflicts,
@@ -35,7 +40,7 @@ export function LoginConflictResolver({
     Record<number, string>
   >({});
   const [resolutionErrors, setResolutionErrors] = useState<
-    Record<number, string>
+    Record<number, ResolutionError>
   >({});
   const [isSending, setIsSending] = useState(false);
 
@@ -59,31 +64,38 @@ export function LoginConflictResolver({
       conflicts
         .filter(
           (conflict) =>
+            conflict.login_conflict &&
             !/^[A-Za-z0-9]+$/.test(
               (replacementLogins[conflict.row] ?? "").trim(),
             ),
         )
         .map((conflict) => [
           conflict.row,
-          "Используйте только латинские буквы и цифры.",
+          { login: "Используйте только латинские буквы и цифры." },
         ]),
     );
     const invalidNames = Object.fromEntries(
       conflicts
         .filter((conflict) => {
+          if (!conflict.full_name_conflict) return false;
           const value = (replacementFullNames[conflict.row] ?? "").trim();
           return value.split(/\s+/).filter(Boolean).length !== 3;
         })
         .map((conflict) => [
           conflict.row,
-          'Введите фамилию, имя и отчество через пробел.',
+          { fullName: "Введите фамилию, имя и отчество через пробел." },
         ]),
     );
     if (
       Object.keys(invalid).length > 0 ||
       Object.keys(invalidNames).length > 0
     ) {
-      setResolutionErrors({ ...invalid, ...invalidNames });
+      const merged = { ...invalid } as Record<number, ResolutionError>;
+      for (const [row, error] of Object.entries(invalidNames)) {
+        const rowNumber = Number(row);
+        merged[rowNumber] = { ...merged[rowNumber], ...error };
+      }
+      setResolutionErrors(merged);
       return;
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -129,11 +141,12 @@ export function LoginConflictResolver({
                     fullWidth
                     size="small"
                     value={replacementFullNames[conflict.row] ?? ""}
-                    error={resolutionErrors[conflict.row] !== undefined}
+                    error={resolutionErrors[conflict.row]?.fullName !== undefined}
                     helperText={
-                      resolutionErrors[conflict.row] ?? conflict.message
+                      resolutionErrors[conflict.row]?.fullName ??
+                      (conflict.full_name_conflict ? conflict.message : undefined)
                     }
-                    disabled={isSending}
+                    disabled={isSending || !conflict.full_name_conflict}
                     onChange={(event) => {
                       const fullName = event.target.value;
                       setReplacementFullNames((current) => ({
@@ -142,7 +155,12 @@ export function LoginConflictResolver({
                       }));
                       setResolutionErrors((current) => {
                         const updated = { ...current };
-                        delete updated[conflict.row];
+                        if (updated[conflict.row]) {
+                          delete updated[conflict.row].fullName;
+                          if (!updated[conflict.row].login) {
+                            delete updated[conflict.row];
+                          }
+                        }
                         return updated;
                       });
                     }}
@@ -153,11 +171,12 @@ export function LoginConflictResolver({
                     fullWidth
                     size="small"
                     value={replacementLogins[conflict.row] ?? ""}
-                    error={resolutionErrors[conflict.row] !== undefined}
+                    error={resolutionErrors[conflict.row]?.login !== undefined}
                     helperText={
-                      resolutionErrors[conflict.row] ?? conflict.message
+                      resolutionErrors[conflict.row]?.login ??
+                      (conflict.login_conflict ? conflict.message : undefined)
                     }
-                    disabled={isSending}
+                    disabled={isSending || !conflict.login_conflict}
                     onChange={(event) => {
                       const login = event.target.value;
                       setReplacementLogins((current) => ({
@@ -166,7 +185,12 @@ export function LoginConflictResolver({
                       }));
                       setResolutionErrors((current) => {
                         const updated = { ...current };
-                        delete updated[conflict.row];
+                        if (updated[conflict.row]) {
+                          delete updated[conflict.row].login;
+                          if (!updated[conflict.row].fullName) {
+                            delete updated[conflict.row];
+                          }
+                        }
                         return updated;
                       });
                     }}

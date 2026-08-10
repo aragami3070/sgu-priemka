@@ -23,6 +23,8 @@ export interface LoginConflict {
   full_name: string
   login: string
   message: string
+  login_conflict: boolean
+  full_name_conflict: boolean
 }
 
 export interface LoginResolution {

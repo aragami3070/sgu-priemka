@@ -110,6 +110,12 @@ pub(crate) struct LoginConflict {
     pub(crate) login: String,
     /// Причина, по которой строка осталась конфликтующей.
     pub(crate) message: String,
+    /// В конфликте участвует `sAMAccountName`.
+    #[serde(default)]
+    pub(crate) login_conflict: bool,
+    /// В конфликте участвует LDAP `cn`/полное имя.
+    #[serde(default)]
+    pub(crate) full_name_conflict: bool,
 }
 
 /// Проверяемая pipeline-ом замена логина одной строки.
