@@ -86,6 +86,27 @@ pub(crate) struct PreparedIdentity {
     pub(crate) group: Group,
 }
 
+impl PreparedIdentity {
+    /// Возвращает полное имя в порядке, используемом LDAP `cn` и `DN`.
+    pub(crate) fn full_name(&self) -> String {
+        let source = &self.source;
+        format!(
+            "{} {} {}",
+            source.last_name.trim(),
+            source.first_name.trim(),
+            source.patronymic.trim()
+        )
+    }
+
+    /// Применяет уже проверенное ФИО к исходным полям записи.
+    pub(crate) fn apply_full_name(&mut self, normalized_full_name: &str) {
+        let mut parts = normalized_full_name.split_whitespace();
+        self.source.last_name = parts.next().unwrap_or_default().to_owned();
+        self.source.first_name = parts.next().unwrap_or_default().to_owned();
+        self.source.patronymic = parts.next().unwrap_or_default().to_owned();
+    }
+}
+
 /// Полностью подготовленная запись студента для создания в LDAP и вывода в итоговый CSV.
 #[derive(Clone)]
 pub(crate) struct PreparedStudent {

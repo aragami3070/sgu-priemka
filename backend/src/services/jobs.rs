@@ -274,10 +274,12 @@ mod tests {
                 LoginResolution {
                     row: 2,
                     login: "ivanovii".to_owned(),
+                    full_name: None,
                 },
                 LoginResolution {
                     row: 3,
                     login: "ivanovii2".to_owned(),
+                    full_name: None,
                 },
             ],
         };
@@ -310,6 +312,7 @@ mod tests {
                     resolutions: vec![LoginResolution {
                         row: 3,
                         login: "ivanovii2".to_owned(),
+                        full_name: None,
                     }],
                 },
             )
@@ -349,6 +352,7 @@ mod tests {
                 resolutions: vec![LoginResolution {
                     row: 2,
                     login: "ivanovii2".to_owned(),
+                    full_name: None,
                 }],
             },
         )

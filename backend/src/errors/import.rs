@@ -36,12 +36,4 @@ pub(crate) enum ImportError {
         #[source]
         source: UnsupportedGroupNumber,
     },
-    /// Сгенерированные данные конфликтуют с другой строкой или записью LDAP.
-    #[error("identity collision at row {row}: {attribute}")]
-    Collision {
-        /// Номер исходной строки с единицы, значение которой уже существует.
-        row: usize,
-        /// LDAP-атрибут, в котором найден конфликт.
-        attribute: String,
-    },
 }

@@ -28,6 +28,7 @@ export interface LoginConflict {
 export interface LoginResolution {
   row: number
   login: string
+  full_name: string
 }
 
 export type JobStatus =

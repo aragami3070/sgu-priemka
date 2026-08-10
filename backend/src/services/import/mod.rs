@@ -23,9 +23,9 @@ use crate::{
 };
 
 use self::{
-    credentials::{generate_password, normalize_conflict_login},
+    credentials::{generate_password, normalize_conflict_full_name, normalize_conflict_login},
     parser::{parse_csv, parse_result_csv},
-    validation::{find_login_collisions, validate_students},
+    validation::{find_identity_collisions, validate_students},
 };
 
 const LOGIN_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -33,17 +33,6 @@ const LOGIN_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 enum LoginResolutionResult {
     Resolved(Vec<LoginResolution>),
     TimedOut(JobStatus),
-}
-
-/// Формирует ФИО студента в порядке, используемом LDAP DN и статусом job.
-fn student_full_name(student: &PreparedStudent) -> String {
-    let source = &student.identity.source;
-    format!(
-        "{} {} {}",
-        source.last_name.trim(),
-        source.first_name.trim(),
-        source.patronymic.trim()
-    )
 }
 
 /// Возвращает безопасные сведения о частично выполненной LDAP-операции.
@@ -56,6 +45,46 @@ fn ldap_failure_details(error: &LdapError) -> (String, bool) {
         } => (format!("{phase:?}"), *possibly_created),
         _ => ("Unknown".to_owned(), false),
     }
+}
+
+/// Формирует сообщение обо всех конфликтах одной строки внутри CSV.
+fn csv_conflict_message(identity: &PreparedIdentity, identities: &[PreparedIdentity]) -> String {
+    let full_name = identity.full_name().to_lowercase();
+    let duplicate_login = identities
+        .iter()
+        .filter(|other| other.login.eq_ignore_ascii_case(&identity.login))
+        .count()
+        > 1;
+    let duplicate_full_name = identities
+        .iter()
+        .filter(|other| other.full_name().to_lowercase() == full_name)
+        .count()
+        > 1;
+    let mut messages = Vec::new();
+    if duplicate_login {
+        messages.push(format!(
+            "Логин `{}` используется несколькими строками этого CSV",
+            identity.login
+        ));
+    }
+    if duplicate_full_name {
+        messages.push(format!(
+            "Полное имя `{}` используется несколькими строками этого CSV",
+            identity.full_name()
+        ));
+    }
+    messages.join("; ")
+}
+
+/// Проверяет исправленное ФИО и применяет его к исходным полям студента.
+fn normalize_and_apply_full_name(
+    identity: &mut PreparedIdentity,
+    full_name: &str,
+) -> Result<(), AppError> {
+    let normalized = normalize_conflict_full_name(identity.source.source_row, full_name)
+        .map_err(|error| AppError::Validation(error.to_string()))?;
+    identity.apply_full_name(&normalized);
+    Ok(())
 }
 
 enum PipelineStage<T> {
@@ -346,7 +375,7 @@ impl ImportService {
                     created: index,
                     total,
                     failed_row: student.identity.source.source_row,
-                    failed_fio: student_full_name(student),
+                    failed_fio: student.identity.full_name(),
                     ldap_phase,
                     possibly_created,
                     result,
@@ -604,7 +633,7 @@ impl ImportService {
         identities: &mut [crate::entities::import::PreparedIdentity],
     ) -> Result<Option<JobStatus>, AppError> {
         loop {
-            let indices = find_login_collisions(identities);
+            let indices = find_identity_collisions(identities);
             if indices.is_empty() {
                 return Ok(None);
             }
@@ -614,17 +643,9 @@ impl ImportService {
                     let identity = &identities[index];
                     LoginConflict {
                         row: identity.source.source_row,
-                        full_name: format!(
-                            "{} {} {}",
-                            identity.source.last_name.trim(),
-                            identity.source.first_name.trim(),
-                            identity.source.patronymic.trim()
-                        ),
+                        full_name: identity.full_name(),
                         login: identity.login.clone(),
-                        message: format!(
-                            "Логин `{}` используется несколькими строками этого CSV",
-                            identity.login
-                        ),
+                        message: csv_conflict_message(identity, identities),
                     }
                 })
                 .collect();
@@ -636,12 +657,15 @@ impl ImportService {
                 LoginResolutionResult::Resolved(resolutions) => {
                     let resolutions = resolutions
                         .into_iter()
-                        .map(|resolution| (resolution.row, resolution.login))
+                        .map(|resolution| (resolution.row, resolution))
                         .collect::<HashMap<_, _>>();
                     for &index in &indices {
                         let identity = &mut identities[index];
-                        if let Some(login) = resolutions.get(&identity.source.source_row) {
-                            identity.login.clone_from(login);
+                        if let Some(resolution) = resolutions.get(&identity.source.source_row) {
+                            identity.login.clone_from(&resolution.login);
+                            if let Some(full_name) = &resolution.full_name {
+                                normalize_and_apply_full_name(identity, full_name)?;
+                            }
                         }
                     }
                     tracing::debug!(
@@ -684,25 +708,39 @@ impl ImportService {
                 return Ok(None);
             }
 
-            let conflicts = collisions
-                .iter()
-                .filter_map(|collision| {
-                    identities
-                        .iter()
-                        .find(|identity| identity.source.source_row == collision.source_row)
-                        .map(|identity| LoginConflict {
-                            row: collision.source_row,
-                            full_name: format!(
-                                "{} {} {}",
-                                identity.source.last_name.trim(),
-                                identity.source.first_name.trim(),
-                                identity.source.patronymic.trim()
-                            ),
-                            login: collision.value.clone(),
-                            message: format!("Логин `{}` уже существует в LDAP", collision.value),
-                        })
-                })
-                .collect();
+            let mut conflicts_by_row = HashMap::<usize, LoginConflict>::new();
+            for collision in collisions {
+                let Some(identity) = identities
+                    .iter()
+                    .find(|identity| identity.source.source_row == collision.source_row)
+                else {
+                    continue;
+                };
+                let entry = conflicts_by_row
+                    .entry(collision.source_row)
+                    .or_insert_with(|| LoginConflict {
+                        row: collision.source_row,
+                        full_name: identity.full_name(),
+                        login: identity.login.clone(),
+                        message: String::new(),
+                    });
+                if !entry.message.is_empty() {
+                    entry.message.push_str("; ");
+                }
+                if collision.attribute == "cn" {
+                    entry.message.push_str(&format!(
+                        "Полное имя `{}` уже существует в LDAP",
+                        collision.value
+                    ));
+                } else {
+                    entry.message.push_str(&format!(
+                        "Логин `{}` уже существует в LDAP",
+                        collision.value
+                    ));
+                }
+            }
+            let mut conflicts = conflicts_by_row.into_values().collect::<Vec<_>>();
+            conflicts.sort_unstable_by_key(|conflict| conflict.row);
 
             match self
                 .request_login_resolution(&context.job_id, JobStage::CheckingLdap, conflicts)
@@ -715,6 +753,9 @@ impl ImportService {
                             .find(|identity| identity.source.source_row == resolution.row)
                         {
                             identity.login = resolution.login;
+                            if let Some(full_name) = resolution.full_name {
+                                normalize_and_apply_full_name(identity, &full_name)?;
+                            }
                         }
                     }
                     // Замена, предложенная для LDAP-конфликта, может создать
@@ -781,7 +822,9 @@ impl ImportService {
             let mut duplicated_rows = HashSet::new();
             for resolution in batch.resolutions {
                 if expected_rows.contains(&resolution.row)
-                    && submitted.insert(resolution.row, resolution.login).is_some()
+                    && submitted
+                        .insert(resolution.row, (resolution.login, resolution.full_name))
+                        .is_some()
                 {
                     duplicated_rows.insert(resolution.row);
                 }
@@ -795,17 +838,48 @@ impl ImportService {
                     has_errors = true;
                     continue;
                 }
-                let Some(login) = submitted.remove(&conflict.row) else {
-                    conflict.message = "Введите логин для этой строки".to_owned();
+                let Some((login, submitted_full_name)) = submitted.remove(&conflict.row) else {
+                    conflict.message = if conflict.message.contains("Полное имя") {
+                        "Введите логин и исправленное ФИО для этой строки".to_owned()
+                    } else {
+                        "Введите логин для этой строки".to_owned()
+                    };
                     has_errors = true;
                     continue;
                 };
                 conflict.login = login.trim().to_owned();
                 match normalize_conflict_login(conflict.row, &login) {
-                    Ok(login) => normalized.push(LoginResolution {
-                        row: conflict.row,
-                        login,
-                    }),
+                    Ok(login) => {
+                        let full_name = match submitted_full_name {
+                            Some(value) => match normalize_conflict_full_name(conflict.row, &value)
+                            {
+                                Ok(value) => Some(value),
+                                Err(ImportError::Validation { message, .. }) => {
+                                    conflict.message = message;
+                                    has_errors = true;
+                                    None
+                                }
+                                Err(error) => {
+                                    conflict.message = error.to_string();
+                                    has_errors = true;
+                                    None
+                                }
+                            },
+                            None if conflict.message.contains("Полное имя") => {
+                                conflict.message = "Введите исправленное ФИО".to_owned();
+                                has_errors = true;
+                                None
+                            }
+                            None => None,
+                        };
+                        if !has_errors {
+                            normalized.push(LoginResolution {
+                                row: conflict.row,
+                                login,
+                                full_name,
+                            });
+                        }
+                    }
                     Err(ImportError::Validation {
                         message: validation_message,
                         ..
@@ -840,9 +914,6 @@ impl ImportService {
             }
             ImportError::UnsupportedGroup { row, .. } => {
                 (JobStage::Validating, "unsupported_group", Some(*row))
-            }
-            ImportError::Collision { row, .. } => {
-                (JobStage::Validating, "csv_collision", Some(*row))
             }
         };
         let status = JobStatus::Failed {

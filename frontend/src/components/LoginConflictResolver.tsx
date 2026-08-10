@@ -31,6 +31,9 @@ export function LoginConflictResolver({
   const [replacementLogins, setReplacementLogins] = useState<
     Record<number, string>
   >({});
+  const [replacementFullNames, setReplacementFullNames] = useState<
+    Record<number, string>
+  >({});
   const [resolutionErrors, setResolutionErrors] = useState<
     Record<number, string>
   >({});
@@ -40,6 +43,11 @@ export function LoginConflictResolver({
     setReplacementLogins(
       Object.fromEntries(
         conflicts.map((conflict) => [conflict.row, conflict.login]),
+      ),
+    );
+    setReplacementFullNames(
+      Object.fromEntries(
+        conflicts.map((conflict) => [conflict.row, conflict.full_name]),
       ),
     );
     setResolutionErrors({});
@@ -60,8 +68,22 @@ export function LoginConflictResolver({
           "Используйте только латинские буквы и цифры.",
         ]),
     );
-    if (Object.keys(invalid).length > 0) {
-      setResolutionErrors(invalid);
+    const invalidNames = Object.fromEntries(
+      conflicts
+        .filter((conflict) => {
+          const value = (replacementFullNames[conflict.row] ?? "").trim();
+          return value.split(/\s+/).filter(Boolean).length !== 3;
+        })
+        .map((conflict) => [
+          conflict.row,
+          'Введите фамилию, имя и отчество через пробел.',
+        ]),
+    );
+    if (
+      Object.keys(invalid).length > 0 ||
+      Object.keys(invalidNames).length > 0
+    ) {
+      setResolutionErrors({ ...invalid, ...invalidNames });
       return;
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -77,6 +99,7 @@ export function LoginConflictResolver({
       conflicts.map((conflict) => ({
         row: conflict.row,
         login: replacementLogins[conflict.row].trim(),
+        full_name: replacementFullNames[conflict.row].trim(),
       })),
     );
   };
@@ -84,8 +107,8 @@ export function LoginConflictResolver({
   return (
     <Box className="login-conflicts">
       <Alert severity="warning">
-        <AlertTitle>Найдены конфликты логинов ({conflicts.length})</AlertTitle>
-        Измените необходимые значения и отправьте всю таблицу на повторную
+        <AlertTitle>Найдены конфликты данных ({conflicts.length})</AlertTitle>
+        Измените необходимые ФИО и логины и отправьте всю таблицу на повторную
         проверку.
       </Alert>
       <TableContainer component={Paper} variant="outlined">
@@ -101,7 +124,30 @@ export function LoginConflictResolver({
             {conflicts.map((conflict) => (
               <TableRow key={conflict.row}>
                 <TableCell>{conflict.row}</TableCell>
-                <TableCell>{conflict.full_name}</TableCell>
+                <TableCell>
+                  <TextField
+                    fullWidth
+                    size="small"
+                    value={replacementFullNames[conflict.row] ?? ""}
+                    error={resolutionErrors[conflict.row] !== undefined}
+                    helperText={
+                      resolutionErrors[conflict.row] ?? conflict.message
+                    }
+                    disabled={isSending}
+                    onChange={(event) => {
+                      const fullName = event.target.value;
+                      setReplacementFullNames((current) => ({
+                        ...current,
+                        [conflict.row]: fullName,
+                      }));
+                      setResolutionErrors((current) => {
+                        const updated = { ...current };
+                        delete updated[conflict.row];
+                        return updated;
+                      });
+                    }}
+                  />
+                </TableCell>
                 <TableCell>
                   <TextField
                     fullWidth
@@ -133,7 +179,7 @@ export function LoginConflictResolver({
       </TableContainer>
       <Box className="login-conflicts__actions">
         <Button variant="contained" disabled={isSending} onClick={submit}>
-          {isSending ? "Проверяем…" : "Проверить все логины"}
+          {isSending ? "Проверяем…" : "Проверить все значения"}
         </Button>
       </Box>
     </Box>

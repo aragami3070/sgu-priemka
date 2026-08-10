@@ -64,6 +64,31 @@ pub(super) fn normalize_conflict_login(
     Ok(login.to_ascii_lowercase())
 }
 
+/// Проверяет и нормализует исправленное ФИО для LDAP CN.
+pub(super) fn normalize_conflict_full_name(
+    source_row: usize,
+    full_name: &str,
+) -> Result<String, ImportError> {
+    let parts = full_name.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 3
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || part.chars().any(|character| {
+                    matches!(
+                        character,
+                        ',' | '=' | '+' | '<' | '>' | '#' | ';' | '"' | '\\'
+                    )
+                })
+        })
+    {
+        return Err(ImportError::Validation {
+            row: source_row,
+            message: "ФИО должно состоять из трёх частей без LDAP-спецсимволов".to_owned(),
+        });
+    }
+    Ok(parts.join(" "))
+}
+
 /// Вычисляет временный пароль из логина, серверной соли и UUID строки.
 pub(super) fn generate_password(login: &str, uuid: &str, salt: &str) -> SecretString {
     let mut hasher = Sha256::new();
@@ -166,6 +191,22 @@ mod tests {
         let second_login = generate_login(&second).expect("корректное ФИО должно дать логин");
 
         assert_eq!(first_login, second_login);
+    }
+
+    #[test]
+    fn normalizes_conflict_full_name() {
+        let full_name = normalize_conflict_full_name(2, "  Иванов   Иван   Иванович ")
+            .expect("ФИО из трёх частей должно пройти проверку");
+
+        assert_eq!(full_name, "Иванов Иван Иванович");
+    }
+
+    #[test]
+    fn rejects_conflict_full_name_with_ldap_special_character() {
+        let error = normalize_conflict_full_name(7, "Иванов Иван Иванович, тест")
+            .expect_err("LDAP-спецсимвол в CN должен быть отклонён");
+
+        assert!(matches!(error, ImportError::Validation { row: 7, .. }));
     }
 
     #[test]

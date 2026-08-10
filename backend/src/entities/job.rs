@@ -94,7 +94,7 @@ pub(crate) enum JobStatus {
 pub(crate) enum JobClientMessage {
     /// Предлагает замены для всех отображённых конфликтующих строк.
     ResolveLogins {
-        /// Новые логины, сопоставленные строкам исходного CSV.
+        /// Новые логины и, при необходимости, ФИО, сопоставленные строкам исходного CSV.
         resolutions: Vec<LoginResolution>,
     },
 }
@@ -117,6 +117,9 @@ pub(crate) struct LoginConflict {
 pub(crate) struct LoginResolution {
     pub(crate) row: usize,
     pub(crate) login: String,
+    /// Исправленное полное имя в формате `Фамилия Имя Отчество`.
+    #[serde(default)]
+    pub(crate) full_name: Option<String>,
 }
 
 /// Один пакет замен из интерактивной таблицы.

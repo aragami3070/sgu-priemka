@@ -100,13 +100,30 @@ impl LdapService {
         let existing_logins = self
             .search_existing_student_logins(&mut ldap, &filter)
             .await?;
+        let name_filter = Self::student_full_name_filter(identities);
+        let existing_full_names = self
+            .search_existing_student_full_names(&mut ldap, &name_filter)
+            .await?;
         let collisions = identities
             .iter()
-            .filter(|identity| existing_logins.contains(&identity.login.to_lowercase()))
-            .map(|identity| LdapCollision {
-                source_row: identity.source.source_row,
-                attribute: "sAMAccountName".to_owned(),
-                value: identity.login.clone(),
+            .flat_map(|identity| {
+                let mut collisions = Vec::new();
+                if existing_logins.contains(&identity.login.to_lowercase()) {
+                    collisions.push(LdapCollision {
+                        source_row: identity.source.source_row,
+                        attribute: "sAMAccountName".to_owned(),
+                        value: identity.login.clone(),
+                    });
+                }
+                let full_name = identity.full_name();
+                if existing_full_names.contains(&full_name.to_lowercase()) {
+                    collisions.push(LdapCollision {
+                        source_row: identity.source.source_row,
+                        attribute: "cn".to_owned(),
+                        value: full_name,
+                    });
+                }
+                collisions
             })
             .collect::<Vec<_>>();
         tracing::debug!(
@@ -124,6 +141,15 @@ impl LdapService {
             .map(|identity| format!("(sAMAccountName={})", ldap_escape(&identity.login)))
             .collect::<String>();
         format!("(&(objectCategory=person)(objectClass=user)(|{login_filters}))")
+    }
+
+    /// Формирует безопасный LDAP-фильтр для пакетного поиска полных имён.
+    fn student_full_name_filter(identities: &[PreparedIdentity]) -> String {
+        let filters = identities
+            .iter()
+            .map(|identity| format!("(cn={})", ldap_escape(identity.full_name())))
+            .collect::<String>();
+        format!("(&(objectCategory=person)(objectClass=user)(|{filters}))")
     }
 
     /// Выполняет поиск логинов студентов и нормализует ответ LDAP в set.
@@ -145,6 +171,27 @@ impl LdapService {
             .success()
             .map_err(|error| LdapError::search(LdapOperation::SearchStudent, error))?;
         Self::student_logins_from_entries(entries)
+    }
+
+    /// Выполняет поиск существующих полных имён в контейнере пользователей.
+    async fn search_existing_student_full_names(
+        &self,
+        ldap: &mut Ldap,
+        filter: &str,
+    ) -> Result<HashSet<String>, LdapError> {
+        let search_result = ldap
+            .search(
+                &self.config.ldap.users_container_dn,
+                Scope::Subtree,
+                filter,
+                ["cn"],
+            )
+            .await
+            .map_err(|error| LdapError::search(LdapOperation::SearchStudent, error))?;
+        let (entries, _) = search_result
+            .success()
+            .map_err(|error| LdapError::search(LdapOperation::SearchStudent, error))?;
+        Self::student_full_names_from_entries(entries)
     }
 
     /// Извлекает непустые значения `sAMAccountName` из LDAP-ответа.
@@ -173,6 +220,31 @@ impl LdapService {
             );
         }
         Ok(existing_logins)
+    }
+
+    /// Извлекает непустые значения `cn` из LDAP-ответа.
+    fn student_full_names_from_entries(
+        entries: Vec<ldap3::ResultEntry>,
+    ) -> Result<HashSet<String>, LdapError> {
+        let mut existing_names = HashSet::with_capacity(entries.len());
+        for entry in entries {
+            let entry = SearchEntry::construct(entry);
+            let values = entry
+                .attrs
+                .into_iter()
+                .find_map(|(name, values)| name.eq_ignore_ascii_case("cn").then_some(values))
+                .ok_or(LdapError::MissingAttribute {
+                    operation: LdapOperation::SearchStudent,
+                    attribute: "cn",
+                })?;
+            existing_names.extend(
+                values
+                    .into_iter()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| value.to_lowercase()),
+            );
+        }
+        Ok(existing_names)
     }
 
     /// Последовательно добавляет пользователя, задаёт пароль и включает учётную запись.
@@ -339,13 +411,7 @@ impl LdapService {
         &self,
         student: &PreparedStudent,
     ) -> Result<(String, String, String), LdapError> {
-        let source = &student.identity.source;
-        let full_name = format!(
-            "{} {} {}",
-            source.last_name.trim(),
-            source.first_name.trim(),
-            source.patronymic.trim()
-        );
+        let full_name = student.identity.full_name();
         validate_dn_value(&full_name, "full name")?;
         validate_dn_value(&student.identity.login, "sAMAccountName")?;
         let group_name = student
@@ -422,12 +488,7 @@ impl LdapService {
     /// Формирует атрибуты выключенной учётной записи Active Directory.
     fn student_attributes(student: &PreparedStudent) -> Vec<(Vec<u8>, HashSet<Vec<u8>>)> {
         let source = &student.identity.source;
-        let full_name = format!(
-            "{} {} {}",
-            source.last_name.trim(),
-            source.first_name.trim(),
-            source.patronymic.trim()
-        );
+        let full_name = student.identity.full_name();
         let principal = format!("{}@main.sgu.ru", student.identity.login);
         vec![
             (

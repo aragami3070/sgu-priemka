@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::{
     entities::import::{Groups, PreparedIdentity, StudentInput},
@@ -14,7 +14,6 @@ pub(super) fn validate_students(
     students: Vec<StudentInput>,
     groups: &Groups,
 ) -> Result<Vec<PreparedIdentity>, ImportError> {
-    let mut full_names = HashSet::with_capacity(students.len());
     let mut prepared = Vec::with_capacity(students.len());
 
     for student in students {
@@ -35,20 +34,6 @@ pub(super) fn validate_students(
                     source,
                 })?;
 
-        let full_name = format!(
-            "{} {} {}",
-            student.last_name.trim(),
-            student.first_name.trim(),
-            student.patronymic.trim()
-        );
-
-        if !full_names.insert(full_name.to_lowercase()) {
-            return Err(ImportError::Collision {
-                row: student.source_row,
-                attribute: "cn".to_owned(),
-            });
-        }
-
         prepared.push(PreparedIdentity {
             source: student,
             login,
@@ -59,17 +44,27 @@ pub(super) fn validate_students(
     Ok(prepared)
 }
 
-/// Возвращает индексы всех строк, участвующих в конфликтах логинов.
-pub(super) fn find_login_collisions(identities: &[PreparedIdentity]) -> Vec<usize> {
-    let mut counts = HashMap::with_capacity(identities.len());
+/// Возвращает строки с дубликатами логина или полного имени внутри CSV.
+pub(super) fn find_identity_collisions(identities: &[PreparedIdentity]) -> Vec<usize> {
+    let mut login_counts = HashMap::with_capacity(identities.len());
+    let mut full_name_counts = HashMap::with_capacity(identities.len());
     for identity in identities {
-        *counts.entry(identity.login.as_str()).or_insert(0usize) += 1;
+        *login_counts
+            .entry(identity.login.to_ascii_lowercase())
+            .or_insert(0usize) += 1;
+        *full_name_counts
+            .entry(identity.full_name().to_lowercase())
+            .or_insert(0usize) += 1;
     }
 
     identities
         .iter()
         .enumerate()
-        .filter_map(|(index, identity)| (counts[identity.login.as_str()] > 1).then_some(index))
+        .filter_map(|(index, identity)| {
+            let login = identity.login.to_ascii_lowercase();
+            let full_name = identity.full_name().to_lowercase();
+            (login_counts[&login] > 1 || full_name_counts[&full_name] > 1).then_some(index)
+        })
         .collect()
 }
 
@@ -143,17 +138,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_full_name_case_insensitively() {
+    fn reports_duplicate_full_name_for_interactive_resolution() {
         let first = student(2, "Иван", "Иванов", "Иванович");
         let second = student(9, "иван", "иванов", "иванович");
 
-        let error = validate_students(vec![first, second], &groups())
-            .expect_err("одинаковые cn внутри файла должны конфликтовать");
+        let prepared = validate_students(vec![first, second], &groups())
+            .expect("дубликат полного имени должен передаваться в интерактивное разрешение");
 
-        assert!(matches!(
-            error,
-            ImportError::Collision { row: 9, attribute } if attribute == "cn"
-        ));
+        assert_eq!(find_identity_collisions(&prepared), vec![0, 1]);
     }
 
     #[test]
@@ -164,7 +156,7 @@ mod tests {
         let prepared = validate_students(vec![first, second], &groups())
             .expect("исправляемый конфликт логинов не должен останавливать валидацию");
 
-        assert_eq!(find_login_collisions(&prepared), vec![0, 1]);
+        assert_eq!(find_identity_collisions(&prepared), vec![0, 1]);
         assert_eq!(prepared[0].source.source_row, 2);
         assert_eq!(prepared[1].source.source_row, 11);
     }
