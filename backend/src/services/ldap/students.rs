@@ -525,6 +525,12 @@ impl LdapService {
                 HashSet::from([principal.as_bytes().to_vec()]),
             ),
             (
+                b"mail".to_vec(),
+                HashSet::from([format!("{}@csit.sgu.ru", student.identity.login)
+                    .as_bytes()
+                    .to_vec()]),
+            ),
+            (
                 b"userAccountControl".to_vec(),
                 HashSet::from([b"514".to_vec()]),
             ),
