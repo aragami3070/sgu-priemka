@@ -6,3 +6,4 @@ target/
 output/
 *.csv
 groups.toml
+scripts/*.json
