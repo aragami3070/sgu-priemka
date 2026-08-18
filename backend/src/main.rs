@@ -7,6 +7,7 @@ mod state;
 
 use config::Config;
 use state::AppState;
+use tower_http::services::{ServeDir, ServeFile};
 
 /// Загружает зависимости, привязывает HTTP-сокет и запускает сервер Axum.
 #[tokio::main]
@@ -22,7 +23,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_cleanup_task(state.clone());
     state.mail.test_connection().await?;
 
-    let app = api::router(state);
+    let frontend_dir = std::env::var("FRONTEND_DIR").unwrap_or_else(|_| "frontend/dist".to_owned());
+    let static_service = ServeDir::new(&frontend_dir)
+        .not_found_service(ServeFile::new(format!("{frontend_dir}/index.html")));
+    let app = api::router(state).fallback_service(static_service);
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
 
     tracing::info!(%listen_addr, "backend запущен и слушает адрес");

@@ -27,7 +27,7 @@ thiserror = "2.0.19"
 toml = "0.8"
 time = { version = "0.3", features = ["formatting", "serde"] }
 tokio = { version = "1.53.1", features = ["full"] }
-tower-http = { version = "0.7.0", features = ["limit"] }
+tower-http = { version = "0.7.0", features = ["fs", "limit"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 translit = "0.8.0"
