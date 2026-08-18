@@ -1,0 +1,6 @@
+**/.env*
+**/.kerberos-cache
+**/output
+target
+**/target
+.git

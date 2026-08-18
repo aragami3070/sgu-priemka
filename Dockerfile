@@ -37,7 +37,6 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 COPY frontend/package*.json ./
 RUN npm ci
-COPY frontend/.env ./
 COPY frontend ./
 RUN npm run build
 
@@ -52,7 +51,6 @@ COPY --from=rust-build /src/backend/target/release/backend /usr/local/bin/sgu-pr
 COPY --from=rust-build /src/backend/templates /app/backend/templates
 COPY --from=rust-build /src/backend/groups.toml /app/groups.toml
 COPY --from=frontend-build /src/frontend/dist /app/frontend/dist
-COPY backend/.env /app/.env
 
 VOLUME ["/secrets", "/app/output", "/app/.kerberos-cache"]
 EXPOSE 8080
